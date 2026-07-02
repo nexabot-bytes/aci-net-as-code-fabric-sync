@@ -1,0 +1,331 @@
+# Jeu de test golden — section fabric_policies (méthode B). Préfixe GOLD-.
+---
+apic:
+  fabric_policies:
+    aaa:
+      # ── MODULES #96-#100 : AAA golden partiel — SECRETS OMIS (key/monitoring_password
+      # ignore_changes ; pwd user = placeholder write-only ; certChain pkiTP = PUBLIC) ──
+      radius_providers:
+      - hostname_ip: 10.99.0.11
+        description: RADIUS provider golden
+        protocol: chap                   # non-defaut (pap)
+        port: 1815                       # non-defaut (1812)
+        retries: 3                       # non-defaut (1)
+        timeout: 10                      # non-defaut (5)
+        monitoring: true                 # non-defaut (false)
+        monitoring_username: gold-monitor
+        mgmt_epg: oob                    # non-defaut (inb)
+      tacacs_providers:
+      - hostname_ip: 10.99.0.12
+        description: TACACS provider golden
+        protocol: chap
+        port: 4949                       # non-defaut (49)
+        retries: 2
+        timeout: 8
+        mgmt_epg: oob
+      users:
+      - username: gold-user
+        password: Placeholder123!        # REQUIS par le cablage, write-only (ignore_changes)
+        description: User golden
+        status: inactive                 # non-defaut (active)
+        email: gold@example.com
+        expires: true                    # non-defaut (false)
+        expire_date: "2030-12-31T00:00:00.000+00:00"
+        first_name: Gold
+        last_name: User
+        phone: 555-0100
+        domains:
+        - name: all
+          roles:
+          - name: ops
+            privilege_type: read         # non-defaut (write)
+      ca_certificates:
+      - name: GOLD-CA
+        description: CA certificate golden
+        certificate_chain: |-
+          -----BEGIN CERTIFICATE-----
+          MIIDRTCCAi2gAwIBAgIUYImmVYtjUfUakaxpgOC+b+S0wZQwDQYJKoZIhvcNAQEL
+          BQAwMjEVMBMGA1UEAwwMR09MRC1UZXN0LUNBMRkwFwYDVQQKDBBOYUMgR29sZGVu
+          IFRlc3RzMB4XDTI2MDcwMjExNTMwNloXDTM2MDYyOTExNTMwNlowMjEVMBMGA1UE
+          AwwMR09MRC1UZXN0LUNBMRkwFwYDVQQKDBBOYUMgR29sZGVuIFRlc3RzMIIBIjAN
+          BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAgWDzDoDG5n14vMVtTKfw3DCt3kVG
+          Va4j7Xt/bt/uz8M2vHUR6BwX3UMA6JGPOMne7ldQA+Qi9nT4K44hihGZRHlzXBm+
+          mLV3ILS55K7TAAfAqcIVzttO7ZhTIGVFYpdjuTKG8qC3GW42vTtZ4xZZq3e/TZJV
+          MUdpKZ/9XcQHUz7Su6n9zhJ4huVhcdB9quoaH2yyumfCEzyUYHrNU1UNEMjIKIv6
+          o09ySoljMk3ZwZ8kFbUfEsKF3UT4UqvsvyHFCjnq7SXfqKxeJQDd9BBi9HwX8aRa
+          1cHw+mvOXaItCnyLA5mwzmbxoisbfHV8rvFaNUBmW5zUwE/w/ZpUgpZKrwIDAQAB
+          o1MwUTAdBgNVHQ4EFgQUBlw+fFaeE3NqllO4/S+a/a/Q3yYwHwYDVR0jBBgwFoAU
+          Blw+fFaeE3NqllO4/S+a/a/Q3yYwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B
+          AQsFAAOCAQEADudd2U3bZ9esc6NOvnckcAtLcB9KwcBYfjuLY6tolSO3/048HABi
+          bAn9Iw8ce2eHH6V8BUboPBt9PG1i5No2bt9MedXkIBGyLU9VQ8OU52ybyflGYW0S
+          Go6Mdv2uR8J6bUMGJfKIvaILmvbIlTJm4DFFbNFL/5/x8NyMfizsv94+nYc2DWYI
+          v2GjLGw7WM5txdVfMI6DtaI1ZT6Nwe8zT2TeOpjkNrdEPHkL6qXzhVEldnsuRUF7
+          vs6EM0X8By9XjuhnKTr9k5bGF3xhDZPUWnsADZi9QEPX06mcrSys8mc4z65IhHaV
+          JoMSRld13noXyx/ri5im0VxH40ZASZlucQ==
+          -----END CERTIFICATE-----
+      ldap:
+        # ── MODULE #101 : ldap (providers + group_map_rules + group_maps) —
+        # password/monitoring_password = SECRETS omis (ignore_changes) ──
+        providers:
+        - hostname_ip: 10.99.0.13
+          description: LDAP provider golden
+          port: 636                      # non-defaut (389)
+          bind_dn: cn=admin,dc=gold,dc=example,dc=com
+          base_dn: dc=gold,dc=example,dc=com
+          timeout: 60                    # non-defaut (30)
+          retries: 2                     # non-defaut (1)
+          enable_ssl: true               # non-defaut (false)
+          filter: cn=$userid             # non-defaut (sAMAccountName=$userid)
+          attribute: memberOf            # non-defaut (CiscoAVPair)
+          ssl_validation_level: permissive   # non-defaut (strict)
+          server_monitoring: true        # non-defaut (false)
+          monitoring_username: gold-ldap-mon
+          mgmt_epg: oob                  # non-defaut (inb)
+        group_map_rules:
+        - name: GOLD_LdapRule
+          description: LDAP group map rule golden
+          group_dn: cn=goldgroup,dc=example,dc=com
+          security_domains:
+          - name: all
+            roles:
+            - name: ops
+              privilege_type: read       # non-defaut (write)
+        group_maps:
+        - name: GOLD_LdapMap
+          rules:
+          - name: GOLD_LdapRule
+      login_domains:
+      - name: GOLD_LoginDomain
+        description: Login domain golden
+        realm: radius
+        radius_providers:
+        - hostname_ip: 10.99.0.11        # ref provider #96
+          priority: 1                    # non-defaut (0)
+    # ── MODULE #91 : geolocation (geoSite + building/floor/room/row/rack + nodes) ──
+    # Le site 'default' système (uid 0) est exclu de la capture.
+    geolocation:
+      sites:
+      - name: GOLD-Site
+        description: Geolocation site golden
+        buildings:
+        - name: GOLD-Building
+          description: Geolocation building golden
+          floors:
+          - name: GOLD-Floor
+            description: Geolocation floor golden
+            rooms:
+            - name: GOLD-Room
+              description: Geolocation room golden
+              rows:
+              - name: GOLD-Row
+                description: Geolocation row golden
+                racks:
+                - name: GOLD-Rack
+                  description: Geolocation rack golden
+                  nodes:                     # geoRsNodeLocation -> topology/pod-1/node-103
+                  - 103
+    # ── MODULE #75 : snmp-policy fabric (snmpPol) — base + communities + trap_forwarders ──
+    # users=SECRETS (authKey/privKey) omis ; clients=liés mgmt_epg node_policies omis
+    pod_policies:
+      # ── MODULE #79 : management-access-policy (commPol) — sous-objets telnet/ssh/https/http (cœur) ; flags cipher/tls + keyring omis ──
+      management_access_policies:
+      - name: GOLD-MgmtAccess
+        description: Management access golden
+        telnet:
+          admin_state: true                 # non-defaut (false) -> commTelnet adminSt
+          port: 2323                         # non-defaut (23)
+        ssh:
+          password_auth: false               # non-defaut (true) -> commSsh passwordAuth
+          port: 2222                         # non-defaut (22)
+        # ⚠️ https NON testé : le sim 6.0(7e) refuse de changer port/dh HTTPS (Error 182, verrouillé 443)
+        http:
+          admin_state: true                  # non-defaut (false) -> commHttp adminSt
+          port: 8080                         # non-defaut (80)
+      # ── MODULE #77 : date-time-policy fabric (datetimePol) — base + ntp_servers ; ntp_keys=secret + mgmt_epg omis ──
+      date_time_policies:
+      - name: GOLD-DateTime
+        apic_ntp_server_master_stratum: 10   # non-defaut (8) -> StratumValue
+        ntp_admin_state: true                # -> adminSt enabled
+        ntp_auth_state: false                # -> authSt disabled
+        apic_ntp_server_state: true          # non-defaut (false) -> serverState
+        apic_ntp_server_master_mode: true    # non-defaut (false) -> masterMode
+        ntp_servers:                          # -> datetimeNtpProv (capture dédiée)
+        - hostname_ip: 10.77.0.1
+          preferred: true                    # -> preferred yes
+      snmp_policies:
+      - name: GOLD-SNMP
+        admin_state: false                   # non-defaut (true) -> adminSt disabled
+        location: GOLD-SNMP-location         # non-defaut ('') -> loc
+        contact: GOLD-SNMP-contact           # non-defaut ('') -> contact
+        communities:                          # -> snmpCommunityP (capture dédiée)
+        - GOLD-community
+        trap_forwarders:                      # -> snmpTrapFwdServerP (capture dédiée)
+        - ip: 10.75.0.10
+          port: 163                          # non-defaut (162)
+    # ── MODULE #76 : dns-policy fabric (dnsProfile) — providers + domains ; mgmt_epg=inb-default omis ──
+    dns_policies:
+    - name: GOLD-DNS
+      providers:                              # -> dnsProv (capture dédiée)
+      - ip: 10.76.0.53
+        preferred: true                       # non-defaut (false) -> preferred yes
+      domains:                                # -> dnsDomain (capture dédiée)
+      - name: gold.example.com
+        default: false                        # non-defaut (true) -> isDefault no
+    # ── MODULE #78 : fabric-pod-policy-group (fabricPodPGrp) — référence les policies pod #75/#77 ──
+    pod_policy_groups:
+    - name: GOLD-PodPolicyGroup
+      description: Pod policy group golden
+      snmp_policy: GOLD-SNMP                   # -> fabricRsSnmpPol (réf #75)
+      date_time_policy: GOLD-DateTime          # -> fabricRsTimePol (réf #77)
+      bgp_route_reflector_policy: default      # -> fabricRsPodPGrpBGPRRP (bgpInstPol default)
+    # ── MODULE #53 : fabric-spine-switch-policy-group + profile (miroirs spine fabric de #52) ──
+    spine_switch_policy_groups:
+    - name: GOLD-FabSpineSwitchPG
+      psu_policy: GOLD-PSU                   # réf #22 (fabricRsPsuInstPol)
+    spine_switch_profiles:
+    - name: GOLD-FabSpineSwitchProfile
+      selectors:
+      - name: GOLD-FabSpineSwSelector
+        policy: GOLD-FabSpineSwitchPG        # réf PG ci-dessus (fabricRsSpNodePGrp)
+        node_blocks:
+        - name: GOLD-FabSpineNodeBlock
+          from: 201                          # IDs spine libres (pas de profil système)
+          to: 202
+      interface_profiles:
+      - GOLD-FabSpineProfile                # réf #18 (fabricRsSpPortP)
+    # ── MODULE #52 : fabric-leaf-switch-policy-group + profile (miroirs fabric de #49/#50) ──
+    leaf_switch_policy_groups:
+    - name: GOLD-FabLeafSwitchPG
+      psu_policy: GOLD-PSU                   # réf #22 (fabricRsPsuInstPol)
+    leaf_switch_profiles:
+    - name: GOLD-FabLeafSwitchProfile
+      selectors:
+      - name: GOLD-FabLeafSwSelector
+        policy: GOLD-FabLeafSwitchPG         # réf PG ci-dessus (fabricRsLeNodePGrp)
+        node_blocks:
+        - name: GOLD-FabLeafNodeBlock
+          from: 103                          # nœuds SANS profil fabric système (101/102 -> overlap)
+          to: 104                            # range (non-defaut)
+      interface_profiles:
+      - GOLD-FabLeafProfile                 # réf #17 (fabricRsLePortP)
+    # ── MODULE #23 : config-export (configExportP) — snapshot local ──
+    config_exports:
+    - name: GOLD-ConfigExport
+      description: Config export golden
+      format: xml                    # non-defaut (json)
+      snapshot: true                 # non-defaut (false) -> snapshot local
+      scheduler: GOLD-Sched          # réf scheduler de #19
+    # ── MODULE #22 : psu-policy (psuInstPol) — redondance alimentation ──
+    switch_policies:
+      psu_policies:
+      - name: GOLD-PSU
+        admin_state: nnred             # non-defaut (combined) -> adminRdnM rdn
+    # ── MODULE #19 : fabric-scheduler (trigSchedP) ──
+    schedulers:
+    - name: GOLD-Sched
+      description: Scheduler golden
+      recurring_windows:
+      - name: GOLD-Window
+        day: Monday                  # non-defaut (every-day)
+        hour: 3                       # non-defaut (0)
+        minute: 30                    # non-defaut (0)
+    # ── MODULE #17 : fabric-leaf-interface-selector (fabricLFPortS) ──
+    # ── MODULE #89 : fabric-leaf-interface-policy-group (fabricLePortPGrp) — link_level (fabricFIfPol) ──
+    leaf_interface_policy_groups:
+    - name: GOLD-FabLeafPG
+      link_level_policy: default                # réf fabricRsFIfPol (tnFabricFIfPolName) -> fabricFIfPol default
+    leaf_interface_profiles:
+    - name: GOLD-FabLeafProfile
+      selectors:
+      - name: GOLD-FabSelector
+        description: GOLD fabric port selector
+        policy_group: GOLD-FabLeafPG
+        port_blocks:
+        - name: GOLD-fabblock
+          from_port: 49
+          to_port: 50
+    # ── MODULE #18 : fabric-spine-interface-selector (fabricSFPortS) ──
+    # NOTE : NaC n'a PAS de module pour créer les fabric spine interface policy groups
+    # (fabricSpPortPGrp) -> policy_group ci-dessous est une réf (dangling ici), mais le
+    # sélecteur + port_blocks round-trippent.
+    spine_interface_profiles:
+    - name: GOLD-FabSpineProfile
+      selectors:
+      - name: GOLD-FabSpineSelector
+        description: GOLD fabric spine port selector
+        policy_group: GOLD-FabSpinePG
+        port_blocks:
+        - name: GOLD-spblock
+          from_port: 1
+          to_port: 2
+    # ── MODULE #14 : monitoring-policy-custom (monFabricPol) ──
+    monitoring:
+      # ── MODULE #48 : syslog-policy (syslogGroup + prof/file/console + remote dest) ──
+      syslogs:
+      - name: GOLD-Syslog
+        description: Syslog golden
+        format: enhanced-log               # non-defaut (aci) -> rfc5424-ts (PIÈGE : show_milli/tz
+        # ne sont autorisés QUE pour le format 'aci' (APIC Error 105) -> non mis ici)
+        admin_state: false                 # non-defaut (true) -> syslogProf disabled
+        local_admin_state: false           # non-defaut (true) -> syslogFile
+        local_severity: errors             # non-defaut (information)
+        console_admin_state: false         # non-defaut (true) -> syslogConsole
+        # (console_severity laissé défaut 'alerts' : syslogConsole refuse 'warnings', APIC Error 120)
+        destinations:
+        - name: GOLD-SyslogDest
+          hostname_ip: 10.88.0.1
+          protocol: udp                    # enhanced-log IMPOSE udp (APIC Error 105)
+          port: 6514                       # non-defaut (514)
+          admin_state: false               # non-defaut
+          facility: local1                 # forwardingFacility
+          severity: errors
+          mgmt_epg: oob                    # -> fileRsARemoteHostToEpg
+      policies:
+      - name: GOLD-FabMonPol
+        description: Fabric monitoring policy golden
+        fault_severity_policies:
+        - class: l1PhysIf
+          faults:
+          - fault_id: F1545
+            initial_severity: warning
+            target_severity: critical
+            description: GOLD fabric fault override
+      # ── MODULE #87 : monitoring-policy (common, uni/fabric/moncommon) — source syslog vers un groupe ──
+      - name: common
+        syslogs:
+        - name: GOLD-CommonSyslogSrc
+          destination_group: GOLD-Syslog       # réf groupe syslog #48
+          audit: false                         # -> incl (non 'all')
+          events: true
+          faults: true
+          session: false
+          minimum_severity: warnings
+    # ── MODULE #41 : fabric-span (spanDestGrp + spanSrcGrp au scope uni/fabric) ──
+    span:
+      destination_groups:                    # fabric-span-destination-group (ERSPAN-to-EPG)
+      - name: GOLD-FabSpanDest
+        description: Fabric SPAN dest golden
+        tenant: Production
+        application_profile: Database_AP
+        endpoint_group: DBServers_EPG
+        ip: 10.87.0.1
+        source_prefix: 10.87.0.0/24
+        dscp: CS3                            # non-defaut (unspecified)
+        flow_id: 30                          # non-defaut (1)
+        mtu: 9000                            # non-defaut (1518)
+        ttl: 48                              # non-defaut (64)
+        version: 1                           # non-defaut (2)
+        enforce_version: true                # non-defaut (false)
+      source_groups:                         # fabric-span-source-group (binding VRF)
+      - name: GOLD-FabSpanSrc
+        description: Fabric SPAN source golden
+        admin_state: false                   # non-defaut (true) -> adminSt disabled
+        destination:
+          name: GOLD-FabSpanDest             # label -> dest group
+          description: GOLD fab label
+        sources:
+        - name: GOLD-FabSrc
+          description: GOLD fab source
+          direction: in                      # non-defaut (both)
+          tenant: Development                 # binding VRF (spanRsSrcToCtx)
+          vrf: Dev_VRF

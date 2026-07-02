@@ -1,0 +1,15 @@
+# Jeu de test golden — section interface_policies (méthode B).
+---
+apic:
+  interface_policies:
+    # ── MODULE #15 : interface-type (infraRsPortDirection) ──
+    nodes:
+    - id: 101
+      interfaces:
+      - module: 1
+        port: 47
+        type: uplink                   # -> direc UpLink (defaut downlink)
+      # ── MODULE #16 : interface-shutdown (fabricRsOosPath) ──
+      - module: 1
+        port: 46
+        shutdown: true                 # -> fabricRsOosPath (blacklist)

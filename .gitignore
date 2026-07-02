@@ -1,0 +1,13 @@
+# Environnement local — JAMAIS commité
+main.tf                    # contient les identifiants APIC (copier main.tf.example)
+data/                      # photo de VOTRE fabric, régénérée par `nac.py capture`
+defaults_effectifs.yaml    # généré par le module NaC
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc

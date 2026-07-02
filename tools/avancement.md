@@ -1,0 +1,315 @@
+# Avancement — couverture & tests des modules NaC ACI
+
+> Fabric de test : APIC simulateur `192.168.0.245` · Dernière mise à jour : 2026-07-01
+
+## État global
+
+| Indicateur | Valeur |
+|---|---|
+| **Modules cochés (méthodes B golden + C mutation)** | **174 / 195** (décompte exact [x] du fichier) |
+| Modules captures (mesure outil `coverage`) | 159/195 (⚠️ SOUS-COMPTE : ignore les captures dédiées, cf note) |
+| Attributs golden round-trippés à 100% | **764** (jeu `tests/golden/`) + 22 attrs singletons via méthode C |
+| Restant = limites assumées | 21 (secrets purs/vmm/node-registration/incompatibles/classes-absentes — voir « Limites assumées ») |
+| `terraform plan` actuel | **No changes** (config intacte) |
+
+> ⚠️ L'outil `coverage` compte par classe APIC référencée dans les moteurs flat/générique ; il NE détecte PAS les captures dédiées (redirect-backup #31, track #33/34, span #36–41, switch #49–53, etc.) → il sous-compte. Le vrai suivi = les cases [x] de MODULE_COVERAGE.md.
+
+Détail des 195 modules : [MODULE_COVERAGE.md](MODULE_COVERAGE.md) · Méthode de test : [TEST_PLAN.md](TEST_PLAN.md)
+
+---
+
+## Architecture (2 scripts séparés)
+
+| Script | Rôle | Commandes |
+|---|---|---|
+| **`nac.py`** | **SYNCHRO PURE** : fabric ↔ `data/*.nac.yaml` ↔ Terraform. Écrit TOUS les objets + TOUS leurs attributs dans `data/`. | `capture · validate · plan · sync · bootstrap` |
+| **`test_nac.py`** | **TEST / DEV** (importe nac.py) | `audit · coverage · selftest · test` |
+
+- `data/` = la vraie config brownfield (capture). `tests/golden/` = jeu de test persistant.
+- `nac.py sync` a un **garde-fou anti-destruction** : refuse d'appliquer si le plan détruirait ≥1 objet (`--force` pour outrepasser).
+- Auth lue du bloc `provider "aci"` de `main.tf` (ou env `APIC_URL/USER/PWD`).
+
+---
+
+## La méthode de test (méthode B — exhaustive)
+
+Pour CHAQUE module, test bout-en-bout avec données **persistantes** :
+
+| Étape | Action |
+|---|---|
+| 0 | `nac.py capture` + `plan` = **No changes** (partir d'un état sain) |
+| 1 | écrire l'objet dans son fichier `tests/golden/<section>.nac.yaml` avec **TOUS ses params** (valeurs non-défaut) — l'objet **reste** (accumulation) |
+| 2 | `nac.py sync` (garde-fou : refuse si destroy) → pousse sur la fabric |
+| 3 | `nac.py capture` → relit depuis la fabric |
+| 4 | `test_nac.py test <golden> <data>` → compare **param-par-param** |
+| 5 | `plan` = **No changes** (idempotence) |
+
+**Test final « d'une frappe »** : fabric → BLANK → apply tout `tests/golden/` → capture → compare sur TOUS les objets.
+
+> Méthode A (rapide, partielle) : valider sur un objet *déjà présent* sur la fabric → ne teste que les params configurés. Utilisée pour #1-#3, à repasser en B.
+
+---
+
+## Garde-fous (suite à incident de perte de données)
+
+Un `terraform apply` global avec un `data/` désynchronisé a détruit la config (récupérée via snapshot). Fixes :
+- `nac.py sync` et `test_nac.py selftest` **refusent d'appliquer si le plan détruirait ≥1 objet**.
+- `selftest` **capture la fabric d'abord** avant tout apply.
+- Règle d'or : **jamais** de `terraform apply` sans `capture` d'abord + vérifier `0 to destroy`.
+
+---
+
+## Modules traités individuellement
+
+| # | Module | Classe | Méthode | Statut |
+|---|---|---|---|---|
+| 1 | external-endpoint-group | l3extInstP | **B (golden, validé)** | ✅ tenant GOLDEN auto-suffisant, 31 attrs 100% round-trip, plan No changes (2026-06-30) |
+| 2 | l3out-node-profile | l3extLNodeP | **B (golden, validé)** | ✅ + router_id_as_loopback, loopbacks, static_routes, next_hops (capture étendue dans nac.py), 45 attrs round-trip (2026-06-30) |
+| 3 | l3out-interface-profile | l3extLIfP | **B (golden, SVI)** | ✅ + description/autostate/mac/mode/scope (capture étendue), 60 attrs round-trip (2026-06-30). Reste: floating SVI, ospf/eigrp/pim/igmp/nd |
+| 4 | bgp-peer (interface) | bgpPeerP | **B (golden, validé)** | ✅ 20 attrs : flags ctrl/peerCtrl/privateASctrl/addrTCtrl reversés + bgpAsP/bgpLocalAsnP, 82 attrs round-trip (2026-06-30) |
+| 5 | ospf/bfd interface profile | ospfIfP/bfdIfP | **B (golden, validé)** | ✅ bloc ospf (name+policy) + bfd_policy capturés, réfs policies tenant, 85 attrs (2026-06-30). Auth OSPF=secret omis |
+| 6 | endpoint-security-group | fvESg | **B (golden, validé)** | ✅ capture ESG ajoutée : attrs + vrf + tag/ip-subnet selectors, 95 attrs (2026-06-30). instrImedcy KO APIC 6.0(7e) |
+| 7 | route-control-route-map | rtctrlProfile | **B (golden, validé)** | ✅ contexts (action/order/set_rule/match_rules) ajoutés à capture_tenant_policies, 102 attrs (2026-06-30) |
+| 8 | set-rule / match-rule | rtctrlAttrP/rtctrlSubjP | **B (golden, validé)** | ✅ clauses set (community/tag/weight/next_hop/preference/metric/metric_type) + prefixes match ajoutés, 115 attrs ; a adopté un prefix brownfield (2026-06-30) |
+| 9 | access-leaf-interface-selector | infraHPortS | **B (golden, validé)** | ✅ capture_leaf_selectors ajoutée : name/desc + policy_group(+type) + port_blocks, exclut system-*, 122 attrs ; a adopté 15 objets brownfield (2026-06-30) |
+| 10 | imported-contract | vzCPIf | **B (golden, validé)** | ✅ capture ajoutée à capture_tenants (name + tenant/contract via vzRsIf), 124 attrs (2026-06-30) |
+| 11 | data-plane-policing-policy | qosDppPol | **B (golden, validé)** | ✅ retiré de PHASE2 (plat) ; corrigé _RE_BOOL forme implicite `var.x ? :`, 139 attrs (2026-06-30) |
+| 12 | access-monitoring-policy | monInfraPol | **B (golden, validé)** | ✅ capture_monitoring_policies (name + fault_severity class->faults), 145 attrs (2026-06-30). Scope = classe infra (l1PhysIf) |
+| 13 | default-route-leak (l3out) | l3extDefaultRouteLeakP | **B (golden, validé)** | ✅ bloc default_route_leak_policy (always/criteria/context_scope/outside_scope) capturé, 149 attrs (sous-feature l3out) (2026-06-30) |
+| 14 | monitoring-policy-custom | monFabricPol | **B (golden, validé)** | ✅ capture_monitoring_policies généralisée (access+fabric), 155 attrs (2026-06-30). target_severity ≥ initial_severity |
+| 15 | interface-type | infraRsPortDirection | **B (golden, validé)** | ✅ capture_interface_types -> interface_policies.nodes ; corrigé SECTION_OUT (section interface_policies jamais écrite), 159 attrs (2026-06-30) |
+| 16 | interface-shutdown | fabricRsOosPath | **B (golden, validé)** | ✅ capture_interface_nodes fusionne type+shutdown ; fix _keyof (id/port) ; a adopté shutdown brownfield eth1/48, 162 attrs (2026-06-30) |
+| 17 | fabric-leaf-interface-selector | fabricLFPortS | **B (golden, validé)** | ✅ capture_fabric_leaf_selectors (miroir fabric de #9) : name/desc + policy_group + port_blocks, 166 attrs (2026-06-30) |
+| 18 | fabric-spine-interface-selector | fabricSFPortS | **B (golden, validé)** | ✅ capture_fabric_selectors généralisée (leaf+spine), 170 attrs (2026-06-30). LIMITE : pas de module NaC pour fabricSpPortPGrp |
+| 19 | fabric-scheduler | trigSchedP | **B (golden, validé)** | ✅ capture_schedulers (name + recurring_windows) ; filtre uid==0 (exclut schedulers système), 174 attrs (2026-06-30) |
+| 20 | firmware-group + maintenance-group | firmwareFwP/maintMaintP | **B (golden, validé)** | ✅ capture_update_groups (node_policies.update_groups + scheduler), couvre les 2 modules, 175 attrs (2026-06-30). Node block non testé (node_registration) |
+| 21 | bfd-policy | bfdIpv4InstPol | **B (golden, validé)** | ✅ capture_bfd_policies (timers) -> switch_policies, 182 attrs (2026-06-30). PIÈGE : startupIntvl=défaut auto-APIC -> non capturé (sinon drift) |
+| 22 | psu-policy | psuInstPol | **B (golden, validé)** | ✅ capture_psu_policies (admin_state via adminRdnM) -> fabric switch_policies, 183 attrs (2026-06-30) |
+| 23 | config-export | configExportP | **B (golden, validé)** | ✅ capture_config_exports (format/snapshot/scheduler) ; exclut uid==0 + default* (mécanisme snapshot) ; snapshot local, 187 attrs (2026-06-30) |
+| 24 | macsec-parameters-policy | macsecParamPol | **B (golden, validé)** | ✅ capture_macsec_param_policies (cipher/offset/key-server/window/expiry/sec-policy) -> interface_policies ; pas de secret, 194 attrs (2026-06-30) |
+| 25 | oob-contract | vzOOBBrCP | **B (golden, validé)** | ✅ capture enrichit tenant système mgmt (name/alias/desc/scope) ; strip mgmt+GOLDEN au push, mgmt garde managed:false, 194 attrs (2026-06-30) |
+| 26 | oob-endpoint-group | mgmtOoB | **B (golden, validé)** | ✅ EPG OOB mgmt + oob_contracts.providers (réf #25), data model imbriqué, 194 attrs (2026-06-30). static_routes non testé (bindings node OOB) |
+| 27 | oob-external-management-instance | mgmtInstP | **B (golden, validé)** | ✅ ext mgmt instance (subnets + oob_contracts.consumers, réf #25), data model key ext_mgmt_instances, 194 attrs (2026-06-30) |
+| 28 | inband-endpoint-group | mgmtInB | **B (golden, validé)** | ✅ EPG inband (vlan/bridge_domain/subnets/contracts), key inb_endpoint_groups, réf BD inb, 194 attrs (2026-06-30) |
+| 29 | redirect-health-group | vnsRedirectHealthGroup | **B (golden, validé)** | ✅ objet L4L7 standalone (name/desc) -> tenant.services.redirect_health_groups, 195 attrs (2026-06-30) |
+| 30 | redirect-policy (PBR) | vnsSvcRedirectPol | **B (golden, validé)** | ✅ PBR (anycast/type/hashing/thresholds/resilient + l3_destinations + health group réf #29), 205 attrs (2026-06-30). PIÈGE srcMacRewriteEnabled=auto-APIC |
+| 29 | redirect-health-group | vnsRedirectHealthGroup | **B (golden, validé)** | ✅ objet L4L7 standalone (name/desc) -> tenant.services.redirect_health_groups, 195 attrs (2026-06-30) |
+| 31 | redirect-backup-policy | vnsBackupPol | **B (golden, validé)** | ✅ objet plat (name/desc) + l3_destinations (réutilise vnsRedirectDest/vnsRsRedirectHealthGroup de #30) ; PIÈGE clé dest = `destination_name` (≠ `name` de #30), réf health group #29, 211 attrs (2026-06-30) |
+| 32 | service-epg-policy | vnsSvcEPgPol | **B (golden, validé)** | ✅ objet plat name/desc + preferred_group (->prefGrMemb include/exclude), sans enfant, 213 attrs (2026-06-30) |
+| 33 | track-list | fvTrackList | **B (golden, validé)** | ✅ capture dédiée (générique KO : module pointe local.track_lists dérivé, pas le flatten _raw) : type/percentage/weight + track_members via fvRsOtmListMember, 229 attrs (2026-06-30) |
+| 34 | track-member | fvTrackMember | **B (golden, validé)** | ✅ capture dédiée : scopeDn composite reversé (l3out/BD) + destination_ip + ip_sla_policy via fvRsIpslaMonPol, réf l3out GOLDEN #2 (2026-06-30) |
+| — | ip-sla-policy (correctif) | fvIPSLAMonitoringPol | **B (golden, validé)** | ✅ ❗était ✅ à tort (générique ne mappait que `name`, content=merge() non parsé) : capture dédiée multiplier/frequency/sla_type/port/http* (2026-06-30) |
+| 35 | access-spine-interface-selector | infraSHPortS | **B (golden, validé)** | ✅ capture_fabric_selectors généralisé (param blk_class=infraPortBlk) -> access_policies.spine_interface_profiles ; golden = profil spine + PG spine (infraSpAccPortGrp) + selector + port_block ; NB infraSHPortS sans descr, 233 attrs (2026-06-30) |
+| 36 | access-span-filter-group | spanFilterGrp | **B (golden, validé)** | ✅ capture_span_filter_groups : entries (spanFilterEntry). PIÈGE majeur : le DN du module utilise la valeur BRUTE (proto-${ip_protocol}) mais le content le mot-clé, et APIC stocke le DN canonique en mots-clés -> forme numérique '6' = forces replacement (instable). Capturer/écrire en MOTS-CLÉS (tcp/http/dns…). Drift attrapé par l'étape idempotence, 242 attrs (2026-06-30) |
+| 37 | access-span-destination-group | spanDestGrp | **B (golden, validé)** | ✅ capture_span_destination_groups variante ERSPAN-to-EPG (tenant/ap/epg + ip/source_prefix/dscp/flow/mtu/ttl/ver/enforce). 2 PIÈGES : (a) classe spanDestGrp AMBIGUË access(uni/infra)+fabric(uni/fabric) -> moteur plat la rangeait en fabric_policies -> exclue via PHASE2_MODULES + capture filtrée par DN uni/infra ; (b) _write_section fait un merge SUPERFICIEL -> le bloc fabric.span périmé a survécu, retiré à la main, 254 attrs (2026-06-30) |
+| 38 | vspan-destination-group | spanVDestGrp | **B (golden, validé)** | ✅ capture_vspan_destination_groups : destinations (spanVDest + spanVEpgSummary ERSPAN ip/dscp/flow/mtu/ttl). Filtre uni/infra+uid=0, 270 attrs (2026-06-30) |
+| 39 | vspan-session | spanVSrcGrp | **B (golden, validé)** | ✅ capture_vspan_sessions (non capté par moteur plat : for_each liste dérivée) : admin_state (adminSt start/stop, défaut start) + label destination (spanSpanLbl, réf dest group #38) + sources (spanVSrc + spanRsSrcToEpg). PIÈGE : défauts SYSTÈME uid=0 nommés 'default' aux 3 scopes (uni/fabric, uni/tn-common, uni/infra) -> clés dupliquées dans for_each TF -> filtre uni/infra + uid=0, 270 attrs (2026-06-30) |
+| 40 | access-span-source-group | spanSrcGrp | **B (golden, validé)** | ✅ capture_span_source_groups : admin_state (adminSt enabled/disabled !), filter_group (spanRsSrcGrpToFilterGrp réf #36), label destination (spanSpanLbl réf #37), sources (spanSrc + spanRsSrcToEpg/spanRsSrcToL3extOut). PIÈGES : (a) classe ambiguë access/fabric -> PHASE2+filtre uni/infra ; (b) span_drop=yes INCOMPATIBLE avec binding source ET avec filter_group au niveau groupe (APIC Error 105) -> span_drop NON testé ; (c) bug capture clé lookup filtergrp (indexé par parent), 280 attrs (2026-06-30) |
+| 41 | fabric-span-destination-group + fabric-span-source-group | spanDestGrp/spanSrcGrp (uni/fabric) | **B (golden, validé)** | ✅ miroir fabric des #37/#40. dest : capture_span_destination_groups paramétrée par `scope` (uni/fabric/), variante ERSPAN-to-EPG. source : capture_fabric_span_source_groups dédiée (pas de filter_group ; bindings VRF spanRsSrcToCtx / BD spanRsSrcToBD ; admin_state défaut enabled). Réfs EPG Production + VRF Development/Dev_VRF, 300 attrs (2026-06-30) |
+| 42 | aaep | infraAttEntityP | **B (golden, validé)** | ✅ capture_access déjà complète (passe hiérarchique) : description + physical_domains/routed_domains (infraRsDomP) + endpoint_groups (infraRsFuncToEpg vlan/primary_vlan/mode). Golden GOLD-AEP, 308 attrs (2026-06-30) |
+| 43 | link-level-policy | fabricHIfPol | **B (golden, validé)** | ✅ enrichissement capture : autoNeg (ternaire auto_enforce?on-enforce:auto?on:off — reverse on-enforce->auto_enforce, off->auto:false, on=défaut) + portPhyMediaType (auto/sfp-10g-tx) ; attr_map ne parsait ni le ternaire ni le conditionnel. descr PAS un champ NaC (absent du content module). Émission non-défaut -> 0 drift sur policies existantes, 314 attrs (2026-06-30) |
+| 44 | priority-flow-control-policy | qosPfcIfPol | **B (golden, validé)** | ✅ enrichissement capture adminSt 3-états (auto_state?auto:(admin_state?on:off)) : reverse on->auto_state:false, off->auto_state:false+admin_state:false ; défaut auto. Même modèle que #43, 317 attrs (2026-06-30) |
+| 45 | netflow-record | netflowRecordPol | **B (golden, validé)** | ✅ enrich match_parameters : match=join(",",sort(var.match_parameters)) — le sort() casse _RE_JOIN -> split du champ match (comparé par ensemble). capture_flat filtre déjà name=default + DN tenant (pas d'ambiguïté à gérer). 319 attrs (2026-06-30) |
+| 46 | storm-control-policy | stormctrlIfPol | **B (golden, validé)** | ✅ enrich configuration_type (isUcMcBcStormPktCfgValid : Valid=separate défaut / Invalid=all) ; rates (rate/burst + bc/mc/uuc) capturés par handler float, action/pps direct. Golden mode 'all', 324 attrs (2026-06-30) |
+| 47 | ptp-profile | ptpProfile | **B (golden, validé)** | ✅ enrich mismatch_handling (ptpoeDstMacRxNoMatch replyWithRxMac/drop) + forwardable (ptpoeDstMacType non-forwardable) ; announce_timeout/priority/intervals direct. PIÈGE : template telecom/smpte impose des intervalles fixes (APIC Error 182) -> reverse profileTemplate codé mais golden garde aes67 (défaut). 328 attrs (2026-06-30) |
+| 48 | syslog-policy | syslogGroup | **B (golden, validé)** | ✅ capture_syslog_policies dédiée : group (format ternaire enhanced-log<->rfc5424-ts) + sous-singletons syslogProf(admin_state)/syslogFile(local_admin_state,local_severity)/syslogConsole(console_admin_state,console_severity) + destinations (syslogRemoteDest host/protocol/port/admin/facility/severity + mgmt_epg via fileRsARemoteHostToEpg). PIÈGES APIC : (a) format enhanced-log IMPOSE protocol=udp + interdit show_millisecond/timezone (Error 105) ; (b) syslogConsole.severity refuse 'warnings' (Error 120). 341 attrs (2026-06-30) |
+| 49 | access-leaf-switch-policy-group | infraAccNodePGrp | **B (golden, validé)** | ✅ capture_leaf_switch_pgs : name + refs policies (infraRs* -> tn*Name) forwarding_scale/bfd_ipv4/bfd_ipv6/cdp/lldp. Golden réf GOLD-BFD-IPv4(#21)/CDP_Enabled/LLDP_Enabled, 344 attrs (2026-06-30) |
+| 50 | access-leaf-switch-profile | infraNodeP | **B (golden, validé)** | ✅ capture_leaf_switch_profiles : selectors (infraLeafS) + policy (infraRsAccNodePGrp réf #49) + node_blocks (infraNodeBlk from/to) + interface_profiles (infraRsAccPortP réf #9). Exclut system-*. ADOPTION brownfield des 4 Leaf_Profile_* existants (12 enfants adoptés, plan No changes). 348 attrs (2026-06-30) |
+| 51 | access-spine-switch-policy-group + access-spine-switch-profile | infraSpineAccNodePGrp / infraSpineP | **B (golden, validé)** | ✅ miroirs spine de #49/#50. PG : bfd_ipv4/ipv6/cdp/lldp. profile : selectors infraSpineS + policy infraRsSpineAccNodePGrp + node_blocks + interface_profiles (infraRsSpAccPortP réf #35). PIÈGE : spprof-default (uid=0 système) ramassé -> exclure name=='default' (capture_flat le faisait, pas ma capture dédiée). 355 attrs (2026-06-30) |
+| 52 | fabric-leaf-switch-policy-group + fabric-leaf-switch-profile | fabricLeNodePGrp / fabricLeafP | **B (golden, validé)** | ✅ miroirs fabric de #49/#50. PG : psu_policy(réf #22)/node_control_policy. profile : selectors fabricLeafS + policy fabricRsLeNodePGrp + node_blocks fabricNodeBlk + interface_profiles (fabricRsLePortP réf #17). PIÈGE : « Overlapping interfaces » (Error 100) si node_block couvre un nœud déjà géré par le profil fabric système (101/102) -> utiliser nœuds libres (103/104). 360 attrs (2026-06-30) |
+| 53 | fabric-spine-switch-policy-group + fabric-spine-switch-profile | fabricSpNodePGrp / fabricSpineP | **B (golden, validé)** | ✅ miroirs spine fabric de #52. PG : psu_policy(réf #22)/node_control_policy. profile : selectors fabricSpineS + policy fabricRsSpNodePGrp + node_blocks + interface_profiles (fabricRsSpPortP réf #18). Pas d'overlap (aucun profil spine fabric système), nœuds 201/202. 365 attrs (2026-06-30) |
+| 54 | hsrp-interface-policy | hsrpIfPol | **B (golden, validé)** | ✅ enrich ctrl -> bfd_enable/use_bia. PIÈGE : le `ctrl = join(concat(var.bfd_enable?["bfd"]:[], var.use_bia?["bia"]:[]))` est MULTI-LIGNE dans le module -> attr_map (parse ligne/ligne) tronque l'expr -> flags manqués. Reverse dédié dans capture_tenants. (regex flag aussi généralisée pour `var.x?[...]` sans `==true`, sans drift). delay/reload_delay direct. 369 attrs (2026-06-30) |
+| 55 | endpoint-mac-tag-policy | fvEpMacTag | **B (golden, validé)** | ✅ capture dédiée : mac + bdName ('*'<->bridge_domain 'all') + ctxName (vrf, si 'all') + tags (tagTag key/value). for_each sur liste dérivée + ternaires -> dédié. _keyof étendu (mac/key) pour comparer. MAC en majuscules (module fait upper()). Golden variante 'all'+vrf GOLD-VRF, 374 attrs (2026-06-30) |
+| 56 | bridge-domain | fvBD | **B (golden, validé)** | ✅ CŒUR : ~14 attrs (bools yes/no + enums unknown_unicast/multicast/multi_dest_flooding + mac/vmac) + subnets (primary/public/shared). Gap corrigé : multicast_arp_drop (conditionnel mcastARPDrop !=null?:null non parsé -> enrich ; adopté 'yes' sur les 10 BD réels brownfield, in-place 0 destroy). PIÈGE APIC : unknown_unicast=proxy ⊥ multi_destination_flooding=encap-flood (Error 1). 393 attrs (2026-06-30) |
+| 57 | endpoint-group | fvAEPg | **B (golden, validé)** | ✅ CŒUR : alias/desc + bridge_domain (fvRsBd réf #56) + flood_in_encap/intra_epg_isolation/proxy_arp(fwdCtrl)/preferred_group (bools) + qos_class. fwdCtrl='var.proxy_arp?"proxy-arp":""' capté grâce à la regex flag généralisée (#54). Gotcha ACI : proxy_arp exige intra_epg_isolation=enforced. 400 attrs (2026-06-30) |
+| 58 | filter (vzFilter) + contract (vzBrCP) | vzFilter / vzBrCP | **B (golden, validé)** | ✅ CŒUR. filter : entries (vzEntry) — enrich protocol/ports (ternaires numéro->mot-clé comme #36 ; DN nom-based donc stable, capturés en mot-clé) + stateful/etherT. contract : scope/qos_class + subjects (vzSubj) + filtres (vzRsSubjFiltAtt). Les filtres utilisateurs réels sont vides (pas d'adoption). 412 attrs (2026-06-30) |
+| 59 | vrf | fvCtx | **B (golden, validé)** | ✅ CŒUR : 6/6 attrs du fvCtx (name/alias/description + data_plane_learning/enforcement_direction/enforcement_preference). GOLD-VRF complété (alias+description). Les 68 "enfants" = sous-features séparées (bgp timers, dns labels, vzAny preferred group, route leak…). 414 attrs (2026-06-30) |
+| 60 | l3out | l3extOut | **B (golden, validé)** | ✅ CŒUR : content=merge() non parsé par attr_map -> enrich description/alias/target_dscp + import/export_route_control_enforcement (enforceRtctrl join+concat, défaut export=true) + sr_mpls (mplsEnabled). Émission non-défaut -> 0 adoption sur l3outs réels (aux défauts). GOLD-L3Out complété. 418 attrs (2026-06-30) |
+| 61 | endpoint-ip-tag-policy | fvEpIpTag | **B (golden, validé)** | ✅ capture dédiée : ip + vrf (ctxName) + tags (tagTag key/value). Miroir IP de #55 (plus simple, pas de bdName ternaire). 422 attrs (2026-06-30) |
+| 63 | igmp-interface-policy | igmpIfPol | **B (golden, validé)** | ✅ 13/13 attrs via capture GÉNÉRIQUE (ifCtrl flags allow_v3_asm/fast_leave/report_link_local_groups mono-ligne -> flag handler #54 ; numériques direct ; version via remap ver->version_). Aucune modif nac.py — preuve que le moteur générique + correctifs transverses couvrent les gros modules tenant. PIÈGE amont : défaut startup_query_interval=31 dépasse la validation max=10 du module. 435 attrs (2026-06-30) |
+| 64 | pim-interface-policy | pimIfPol | **B (golden, validé)** | ✅ ctrl flags (mcast_dom_boundary/passive/strict_rfc via #54) + drDelay/drPrio/helloItvl/jpInterval (direct), capture générique. auth_key=SECRET (secureAuthKey, non round-trippable) -> auth_type=none, omis. 442 attrs (2026-06-30) |
+| 65 | application-profile | fvAp | **B (golden, validé)** | ✅ 3/3 attrs (name/alias/description) sur GOLD-AP. Cœur, capture générique. 444 attrs (2026-06-30) |
+| 66 | dhcp-relay-policy + dhcp-option-policy | dhcpRelayP / dhcpOptionPol | **B (golden, validé)** | ✅ captures dédiées (for_each listes dérivées). relay : providers (dhcpRsProv, tDn ternaire epg/l3out reversé + ip) ; filtre scope tenant (owner=infra uni/infra exclu). option : options (dhcpOption id/data/name). Golden provider EPG réf GOLD-EPG #57. 453 attrs (2026-06-30) |
+
+**À repasser en méthode B** pour valider TOUS leurs attributs (mtu/mac/mode/svi, loopback, static routes, ospf/bfd, aggregate…).
+
+**Acquis transverses** (handlers de patterns, profitent à tous les modules) :
+`direct · bool · num0 (0→"infinite") · float (format) · list (join) · num-or-null · flag (ctrl-flags) · const`.
+Dédup des policies tenant par nom (DN le plus court) — classe à 2 scopes.
+
+**Harnais golden opérationnel** (2026-06-30) : `tests/golden/` créé + cycle méthode B
+rodé sur le module #1. Correctifs `test_nac.py test` issus du run : `_keyof` reconnaît
+la clé `prefix` (subnets) ; comparaison `golden ⊆ capture` (n'itère que sur les
+sections définies dans le golden). Méthode de push validée : **fichier séparé
+`data/_golden.nac.yaml`** (merge additif), jamais d'écrasement de `data/tenants.nac.yaml`.
+
+---
+
+## ⏸️ POINT DE REPRISE — NOUVELLE FENÊTRE (mis à jour 2026-07-02, après vague 4 #102-#109 — CAMPAGNE TERMINÉE)
+
+> **TL;DR pour reprendre (2026-07-02 fin) :** **174/195 modules cochés**, **764 attributs** golden + 22 attrs singletons méthode C, plan No changes, fabric propre, snapshot `METHODC-WAVE2` dispo. **LES 4 VAGUES DE RÉEXAMEN SONT TERMINÉES** (#91→#109, 24 modules gagnés en 2 jours) : vague 1 geolocation+mpls-qos, vague 2 méthode C (11 singletons) + mst/vpc reclassés, vague 3 famille AAA (6, secrets omis), vague 4 fex ×2 + node-address ×2 + useg + **chaîne L4L7 PHYSICAL complète** (37 ressources). **Les 21 restants sont de VRAIES limites** : SECRETS purs non contournables (keyring, mcp, smart-licensing, remote-location [brownfield ubuntu], snmp-trap community) ; CLASSES ABSENTES du data model 6.0(7e) (vxlan-custom-qos, border-gateway-set-policy, remote-vxlan-fabric-policy) ; INCOMPATIBLES (interface-configuration ×2 = new_interface_configuration ; switch-configuration) ; RISQUÉS par nature (node-registration = ré-enregistrement, rbac-node-rule [dérive de nodes role leaf], pod-setup) ; VMM ×2 (pas de vCenter) ; imported-l4l7-device (exige device dans un 2e tenant — faisable si besoin futur) ; fabric-pod-profile (enfants podS vs default-all) ; external-connectivity-policy (création+delete --force, faible valeur) ; aaa mgmt-settings enfants (aaaPwdProfile...). **PROCHAINE ÉTAPE RECOMMANDÉE : CLÔTURE** — nettoyer le mot de passe de main.tf (+ défauts scripts tools/) puis PREMIER COMMIT du repo. Ancien TL;DR ci-dessous. VAGUE 1 (2026-07-01) : #91 geolocation + #92 mpls-custom-qos ; vxlan-custom-qos = limite définitive. VAGUE 2 (2026-07-02) : **#95 MÉTHODE C validée** (`tools/methodec.py` apply/verify/revert — 11 singletons × 22 attrs mutés/vérifiés/revertés, 2 bugs capture corrigés bgpAsP-ambigu + atomic admin_state-sans-try) + #93 mst-policy et #94 vpc-group reclassés → golden B (+ adoption brownfield vpc_pg_pod1_101_102) ; border-gateway + remote-vxlan = limites définitives (vxlanSite unresolved 6.0(7e)). **Vagues restantes** : (3) golden partiel secrets omis [radius/tacacs/user ont ignore_changes VÉRIFIÉ ; ca-certificate = cert PUBLIC round-trippable ; ldap/login-domain/remote-location] ; (4) useg-epg (ip/mac selectors sans VMM), fex-profile/selector (sim = tout simulé), L4L7 PHYSICAL (l4l7-device/service-graph-template/device-selection-policy = objets logiques purs), oob/inband-node-address nœuds 103/104, external-connectivity-policy (create+delete --force). Hors d'atteinte (~20) : secrets purs (keyring/mcp/smart-licensing), node-registration, interface-configuration ×2 (INCOMPAT), VMM, fex-HW, pod-setup, vxlan*. Ancien TL;DR (#66) ci-dessous.
+>
+> **(ancien) TL;DR :** **132/195 modules cochés** (dont ~61 golden méthode B, ~71 auto-couverts), **646 attributs** golden round-trippés à 100 %. Fabric **PROPRE** (`nac.py plan` = No changes, `data/` ↔ fabric ↔ state cohérents, aucun fichier `data/_golden*` résiduel). **Le travail de fond est TERMINÉ** : cœur tenant + access/fabric (switch profiles+PG, interface selectors) + SPAN/vspan + policies plates + services L4L7 légers + tags + dhcp/igmp/pim = tous golden-testés (#1→#66). **Aucun commit** (mdp en dur dans `main.tf` — nettoyer avant tout commit).
+>
+> **76 modules restants, catégorisés :**
+> - **~12 SECRETS** non round-trippables (aaa, ca-certificate, keyring, ldap, login-domain, macsec-keychain, mcp, radius, remote-location, smart-licensing, tacacs, user) → **limite définitive**, ne pas tenter.
+> - **~23 SINGLETONS / globaux** (banner, bgp-policy global, control-plane-mtu, date-time, dns, endpoint-loop-protection, error-disabled-recovery, qos global, mst, pod-setup, port-tracking, sr-mpls, vpc-group, atomic-counter, geolocation, health-score, management-access, external-connectivity, border-gateway, remote-vxlan, fabric-pod-policy-group/profile…) → validés par `capture_singletons` + plan No changes, **non golden-testables** (DN `default` unique).
+> - **~15 LOURDS/INCOMPATIBLES/NO-HW** : L4L7 deep (service-graph-template, l4l7-device, imported-l4l7-device, device-selection-policy), VMM (vmware/nutanix), node-bindings (inband/oob-node-address, node-registration, rbac-node-rule), interface-configuration + fabric-interface-configuration (exigent `new_interface_configuration=true`, INCOMPATIBLE), fex (pas de matériel), switch-configuration.
+> - **~22 BONUS tractables NON faits** (optionnels, faible valeur ajoutée) : useg-endpoint-group, snmp-policy/snmp-trap (fabric, vérifier singleton), qos-policy/qos custom, nd-interface-policies, hsrp-group-policy, vxlan-custom-qos, access/fabric-leaf-interface-policy-group, monitoring-policy/tenant-monitoring-policy, tenant-span, + core déjà round-trippé mais pas golden-testé (vlan-pool, physical/routed-domain, port-channel-policy).
+>
+> **Prochain module si on continue = #81** : port-channel-policy (lacpLagPol, interface_policies) puis qos-policy/mpls-custom-qos (tenant), netflow-exporter/monitor access, tenant-span, infra-dhcp-relay, policy-groups. CAMPAGNE 18 TRACTABLES : #80 (vlan-pool+phys+routed-dom) + #81 (port-channel) + #82 (netflow-exporter+monitor access) FAITS = 16/18 (#90 tenant). CAMPAGNE CLOSE — restants = mpls-custom-qos (infra-only) + limites assumées, tenant-monitoring, monitoring-policy, infra-dhcp-relay, 3 policy-groups, tenant.
+
+État fabric **PROPRE** : `nac.py plan` = **No changes**, `data/` ↔ fabric ↔ state cohérents. Rien d'à moitié appliqué. **Aucun commit** (mdp en dur dans main.tf — ne pas commit sans nettoyer).
+
+**✅ #31 redirect-backup-policy** (211 attrs). Piège : clé dest = `destination_name`.
+**✅ #32 service-epg-policy** (213 attrs). Objet plat, preferred_group->prefGrMemb.
+**✅ #33/#34 track-list/track-member + correctif ip-sla** (2026-06-30, 229 attrs, plan No changes). LEÇON : un module dont le `for_each` pointe une **liste dérivée** (`local.track_lists`) et non le `flatten _raw` n'est PAS vu par le moteur générique → capture dédiée. Idem `content = merge(...)` (ip-sla) non parsé par `attr_map` → vérifier les ✅ "0 attrs" hérités du générique, ils peuvent être trompeurs.
+
+**✅ #35 access-spine-interface-selector** (233 attrs). capture_fabric_selectors généralisé (blk_class).
+**✅ #36 access-span-filter-group** (242 attrs). PIÈGE forme numérique instable -> mots-clés.
+**✅ #37 access-span-destination-group** (254 attrs). PIÈGES classe ambiguë + merge superficiel.
+**✅ #38/#39 vspan-destination-group + vspan-session** (270 attrs). PIÈGE défauts système uid=0 aux 3 scopes -> filtre uni/infra+uid.
+**✅ #40 access-span-source-group** (280 attrs). Domaine SPAN/vspan access COMPLET (#36→#40). PIÈGE span_drop incompatible binding/filter_group.
+**✅ #41 fabric-span (dest + source)** (300 attrs). Miroir fabric ; dest via scope param, source bindings VRF/BD. Domaine SPAN COMPLET (access+fabric+vspan).
+**✅ #42 aaep** (308 attrs). Déjà capturé par capture_access ; golden GOLD-AEP. (reste dans PHASE2_MODULES : géré par capture_access — correct).
+**✅ #43 link-level-policy** (314 attrs). Enrichi autoNeg+portPhyMediaType. MODÈLE flats partiels.
+**✅ #44 priority-flow-control-policy** (317 attrs). Enrichi adminSt 3-états.
+**✅ #45 netflow-record** (319 attrs). Enrich match_parameters (join+sort).
+**✅ #46 storm-control-policy** (324 attrs). Enrich configuration_type ternaire.
+**✅ #47 ptp-profile** (328 attrs). Enrich mismatch_handling/forwardable ; template contraint (Error 182).
+**✅ #48 syslog-policy** (341 attrs). Group + prof/file/console + dest + mgmt_epg. Contraintes enhanced-log/console.
+**✅ #49 access-leaf-switch-policy-group** (344 attrs). Refs policies switch.
+**✅ #50 access-leaf-switch-profile** (348 attrs). Chaîne switch leaf COMPLÈTE. Adoption brownfield.
+**✅ #51 spine switch PG + profile** (355 attrs). Miroirs spine. PIÈGE spprof-default uid=0.
+**✅ #52 fabric leaf switch PG + profile** (360 attrs). PIÈGE overlap interfaces nœud système -> 103/104.
+**✅ #53 fabric spine switch PG + profile** (365 attrs). Chaînes switch profiles complètes.
+**✅ #54 hsrp-interface-policy** (369 attrs). PIÈGE ctrl multi-ligne -> reverse dédié.
+**✅ #55 endpoint-mac-tag-policy** (374 attrs). bdName/ctxName ternaires + tags.
+**✅ #56 bridge-domain** (2026-06-30, 393 attrs, plan No changes). CŒUR. Gap multicast_arp_drop corrigé+adopté. PIÈGE proxy⊥encap-flood.
+
+> 💡 RÉVISION STRATÉGIE : le « tractable » n'était PAS épuisé. Beaucoup de modules CŒUR (bridge-domain, endpoint-group, contract, filter, vrf, l3out…) sont capturés/round-trippés dans la vraie config (plan No changes) mais jamais golden-testés individuellement avec TOUS leurs attrs. Ce sont des cibles à FORTE valeur et FAIBLE risque (objets tenant namespacés). Continuer par contract/filter/vrf.
+**✅ #57 endpoint-group** (400 attrs). CŒUR. fwdCtrl via regex flag #54.
+**✅ #58 filter + contract** (412 attrs). CŒUR.
+**✅ #59 vrf** (414 attrs). CŒUR 6/6 attrs.
+**✅ #60 l3out** (418 attrs). CŒUR, merge() enrichi. **CŒUR TENANT 100% golden-testé**.
+**✅ #61 endpoint-ip-tag-policy** (2026-06-30, 422 attrs, plan No changes). Miroir IP de #55.
+
+> ⚠️ LEÇON attr_map : les blocs `content` dont une VALEUR s'étale sur PLUSIEURS LIGNES (ex ctrl=join(concat(\n ... \n))) ne sont PAS parsés (le moteur lit ligne par ligne). Symptôme : attr présent dans le module mais jamais capturé. Fix : enrichissement dédié (reverse du champ APIC). Concerne potentiellement d'autres modules à ctrl/concat multi-ligne.
+
+> ⚠️ SINGLETONS non testables par golden (port-tracking infraPortTrackPol, endpoint-loop-protection epLoopProtectP, control-plane-mtu, sr-mpls-global-config, etc.) : un seul objet `default` par fabric -> un golden ÉCRASERAIT la vraie config (interdit par README). Ils sont validés via capture_singletons + plan No changes (round-trip prouvé sur leurs valeurs réelles). NE PAS leur créer de golden.
+
+> ⚠️ LEÇON workflow (vécue sur #40) : ne PAS lancer `capture` au milieu d'un module dont la 1ʳᵉ tentative d'apply a partiellement échoué — la capture réécrit `data` et EFFACE les attributs dont le binding APIC n'a pas (encore) été créé (ex filter_group). Séquence sûre : éditer data -> plan -> sync -> SEULEMENT alors capture. Les erreurs APIC d'incompatibilité (Error 105) interrompent l'apply et laissent des objets partiels ; bien nettoyer (sync --force) avant de reprendre.
+
+> ⚠️ LEÇON _write_section (merge SUPERFICIEL) : si une capture cesse de produire une clé top-level d'une section, l'ancienne valeur PERSISTE dans le fichier (merge `{**existing, **payload}`). Quand on retire/déplace un objet, vérifier qu'aucun bloc périmé ne reste (le retirer à la main ou repartir d'un fichier propre).
+
+**✅ #62 BILAN+LIMITES** + **✅ #63 igmp** (435) + **✅ #64 pim** (442) + **✅ #65 application-profile** (444). Voir sections plus bas.
+
+**✅ #66 dhcp-relay + dhcp-option** (453 attrs).
+
+**✅ #67 multicast-route-map** (2026-07-01, 459 attrs, plan No changes). `pimRouteMapPol` (name+description) capturé par le moteur générique ; les `entries` (`pimRouteMapEntry`, `for_each` sur `var.entries` = liste dérivée) NON vues → enrichissement dédié dans `capture_tenant_policies` (reverse src/grp/rp/action/order, filtre défauts 0.0.0.0/permit). Clé YAML `tenant.policies.multicast_route_maps[].entries[]`.
+
+**✅ #102-#109 VAGUE 4 — les « intestables » qui ne l'étaient pas** (2026-07-02, 764 attrs, plan No changes). **#102-#103 fex-profile + fex-selector** : la « limite pas de matériel » était FAUSSE — le sim accepte les objets logiques (rien n'y est réel). `capture_fex_profiles` (infraFexP + hports fexprof- + port_blocks). PIÈGE : descr des hports fex JETÉ silencieusement (miroir #35). **#104-#105 oob/inband-node-address** : noeud FICTIF 103 avec **role `unspecified`** = hors de TOUS les filtres for_each (node_registration/rbac/profils auto = leaf/spine only). `capture_node_addresses` EXCLUT node-1 (l'APIC — son adresse OOB est NOTRE accès) et les noeuds enregistrés (warning). v4+v6 round-trip. ⚠️ COUPLAGE : `node_policies.inb_endpoint_group` est GLOBAL — le poser à GOLD-InB-EPG a déplacé les bindings mgmt_epg inband de dns/date-time (2 changes in-place, cohérent). **#106 useg-endpoint-group** : fvAEPg isAttrBasedEPg=yes filtré de la boucle EPG normale + fvCrtrn/fvIpAttr/fvMacAttr. 2 PIÈGES APIC/NaC : (a) match_type `all` INTERDIT avec ip/mac statements (Error 105 « attribute cannot be configured when match type is all ») ; (b) **DÉFAUT NaC use_epg_subnet=TRUE** → sans `use_epg_subnet: false` l'ip est forcée 0.0.0.0/usefvSubnet=yes. INCIDENT MÉTHODO (leçon #40 confirmée 2×) : capture entre 2 tentatives → data réécrit avec l'état cassé → l'apply suivant reposte le cassé → TOUJOURS re-vérifier data après capture intermédiaire. **#107-#109 chaîne L4L7 PHYSICAL complète** (37 ressources d'un coup, 0 erreur) : l4l7-device (vnsLDevVip + vnsCDev + vnsCIf/path + vnsLIf/vnsRsCIfAttN + phys domain), service-graph-template mode single-device (vnsAbsNode routingMode=Redirect + vnsRsNodeToLDev), device-selection-policy (vnsLDevCtx + vnsLIfCtx consumer/provider + rels ToLIf/ToBD/ToSvcRedirectPol→PBR #30 + l3Dest/permitLog). Le « hors scope simulateur » de L4L7 était FAUX pour les objets logiques purs. VIRTUAL/VMM + multi-device + imported-l4l7-device restent hors scope.
+
+**✅ #96-#101 VAGUE 3 — famille AAA en golden PARTIEL (secrets omis)** (2026-07-02, 712 attrs, plan No changes). Fonction `capture_aaa_security` dédiée → `fabric_policies.aaa.{radius_providers, tacacs_providers, users, ca_certificates, login_domains, ldap}`. **#96 radius** + **#97 tacacs** (protocol/port/retries/timeout/monitoring+username/mgmt_epg oob ; key+monitoring_password = ignore_changes, omis). **#98 user** (status/email/expires/expire_date [format `2030-12-31T00:00:00.000+00:00` round-trippe tel quel]/first-last/phone + domains/roles privilege_type ; **pwd REQUIS par le câblage → placeholder constant `Placeholder123!`** émis par la capture, write-only ignore_changes ; PIÈGE : l'APIC AUTO-CRÉE userdomain `common`+role `read-all` uid=0 sous chaque user → filtrés, miroir du piège geolocation #91). **#99 ca-certificate** : **RECLASSÉ depuis « secrets » — certChain est PUBLIC** et round-trippe intégralement (CA openssl 2048 dans le golden, `.strip()` à la capture). **#100 login-domain** : **RECLASSÉ — AUCUN secret** (realm radius + provider group homonyme + aaaProviderRef priorité ; filtre uid=0 `fallback` ; PIÈGE validation : name sans tiret). **#101 ldap** (providers 12 attrs + group_map_rules avec security_domains/roles + group_maps ; PIÈGE câblage : `group_maps[].rules` = liste d'OBJETS `{name}`). **remote-location DÉFÉRÉ définitivement** : un fileRemotePath brownfield RÉEL (« ubuntu ») a un mot de passe — l'adoption POSTerait le placeholder PAR-DESSUS (ignore_changes ne protège qu'après import) → ne pas capturer cette classe. NOTE incident : une capture a été coupée (RemoteDisconnected, hoquet sim) → le test passait TROMPEUSEMENT sur le data écrit à la main ; toujours vérifier que la capture s'est terminée (ligne résumé GOLDEN) avant de conclure.
+
+**✅ #95 MÉTHODE C — 11 singletons par mutation réversible** (2026-07-02, plan No changes, fabric restaurée à l'identique). **NOUVELLE MÉTHODE validée** (outil versionné `tools/methodec.py` apply/verify/revert) : snapshot APIC (configExportP `METHODC-WAVE2` adminSt=triggered, adopté ensuite comme config_export) → 22 attrs posés NON-DÉFAUT dans data/ → plan **0 add / 11 change / 0 destroy** (mutation en place, garde-fou intact) → sync → capture → **22/22 round-trippés** → plan No changes (idempotence à l'état muté) → revert (valeurs réelles) → sync → capture → plan No changes. Modules : banner (5 attrs), atomic-counter (2), control-plane-mtu (mtu), endpoint-loop-protection (4), error-disabled-recovery (interval), health-score (ignore_acked_faults), port-tracking (3), sr-mpls (2), qos access (preserve_cos), bgp-policy (asn), aaa (remote_user_login_policy). **2 BUGS CAPTURE corrigés** : (a) `bgpAsP` AMBIGU (existe aussi sous les bgp peers l3out, 4 instances) → filtre `uni/fabric/bgpInstP` dans capture_singletons ; (b) `atomic_counter.admin_state` câblé **sans try()** dans le parent → invisible du regex var2pf → jamais capturé → `count = admin_state != null` jamais vrai → module JAMAIS instancié → fixup dédié (singleton adopté au passage). LEÇON ep-loop-protection : `action` forme chaîne = UN SEUL flag round-trippable (le combo 'a,b' capturé raw n'est pas reparsé par le câblage string-form) → mutation single-flag. LIMITES notées par module : complexes non mappés (guiMessage banner, APICMtuApply, includeApicPorts, edrEventP, management_settings aaa, qos classes, bgp RRs).
+
+**✅ #94 vpc-group** (2026-07-02, 662 attrs, plan No changes). **RECLASSÉ** : les `groups` (fabricExplicitGEp) sont des objets nommés ADDITIFS — seul `fabricProtPol.mode` est un singleton (moteur). `capture_vpc_groups` dédiée (paire + fabricNodePEp switch_1/switch_2 triés + fabricRsVpcInstPol→policy). Golden GOLD-VPC-Group nœuds libres 103/104, policy `default`. **ADOPTION brownfield** : `vpc_pg_pod1_101_102` (vPC réel 101/102) capturé et adopté (2 adds POST identiques, 0 destroy).
+
+**✅ #93 mst-policy** (2026-07-02, 662 attrs, plan No changes). **RECLASSÉ** : `stpMstRegionPol` vit sous `uni/infra/mstpInstPol-default/mstpRegionPol-<name>` en for_each PAR NOM — pas un singleton. `capture_mst_policies` dédiée : region (regName) + revision (rev) + instances (stpMstDomPol name/id) + vlan_ranges (fvnsEncapBlk from/to, classe partagée avec les vlan pools → indexation par parent suffit). Golden GOLD-MST (région/rev 5/instance id 1/vlans 200-210).
+
+**✅ #92 mpls-custom-qos-policy** (2026-07-01, 653 attrs, plan No changes). `qosMplsCustomPol` sous `uni/tn-infra` → **1ᵉʳ usage du patron tenant système #25 sur `infra`** : golden + data définissent `tenant infra {managed:false, policies.mpls_custom_qos_policies}` ; enrichissement dédié dans `capture_tenants` (base name/alias/descr + `ingress_rules` qosMplsIngressRule [exp_from/to, priority, dscp_target, cos_target] + `egress_rules` qosMplsEgressRule [dscp_from/to keywords AF11/AF13, exp_target, cos_target] ; défauts `unspecified` omis, filtre tn==infra + name!=default). ⚠️ **vxlan-custom-qos-policy = LIMITE DÉFINITIVE** : classes `qosVxlan*` non résolues sur APIC 6.0(7e) (HTTP 400 « unresolved class ») — vérifié par requête REST directe, le data model de cette version ne les connaît pas.
+
+**✅ #91 geolocation** (2026-07-01, 653 attrs, plan No changes). `geoSite` uni/fabric/site- + hiérarchie complète geoBuilding/geoFloor/geoRoom/geoRow/geoRack + `geoRsNodeLocation` (nodes → node 103 libre, pod dérivé de node_policies sinon 1). Fonction `capture_geolocation` dédiée → `fabric_policies.geolocation.sites` (nesting récursif buildings→floors→rooms→rows→racks→nodes). **PIÈGE (attrapé par la capture post-sync)** : l'APIC **auto-crée une chaîne `default` uid=0** (building/floor/room + rack directement sous room, hors hiérarchie module) **sous chaque site créé** → filtre `uid != "0"` à TOUS les niveaux (miroir du site-default système). Reclassé depuis « singletons » : geoSite est multi-instances, ce n'était PAS un singleton.
+
+**✅ #90 tenant (fvTenant)** (2026-07-01, 646 attrs, plan No changes). Clôture campagne : ajout `alias` (nameAlias) au tenant GOLDEN, capté par obj() (mapping content du module). security_domains omis (réfs aaaDomain=aaa). 1 attr. **CAMPAGNE 18-TRACTABLES CLOSE : 16 modules golden-testés (#80->#90), mpls-custom-qos + vxlan-custom-qos + useg-epg + snmp-trap DÉFÉRÉS (infra-only/secret/VMM).**
+
+**✅ #89 access-spine + fabric-leaf interface-policy-group** (2026-07-01, 645 attrs, plan No changes). 2 miroirs de #88 : `infraSpAccPortGrp` (access spine) + `fabricLePortPGrp` (fabric leaf). Base captée par le générique (_flat_table subpaths spine_interface_policy_groups / leaf_interface_policy_groups) ; relations enrichies (spine : infraRsHIfPol link_level->GOLD-LinkLevel #43 + infraRsCdpIfPol cdp + infraRsAttEntP aaep->GOLD-AEP #42 ; fabric-leaf : fabricRsFIfPol link_level->fabricFIfPol 'default'). macsec-if omis. 4 attrs.
+
+**✅ #88 access-leaf-interface-policy-group** (2026-07-01, 641 attrs, plan No changes). `infraAccPortGrp` — déjà capturé par `_capture_pgs` (type + réfs policies) mais partiel. **PG_RELATIONS étendu** : + egress/ingress DPP (infraRsQosEgress/IngressDppIfPol->GOLD-DPP #11) + PFC (infraRsQosPfcIfPol->GOLD-PFC #44). Golden GOLD-AccessLeafPG = objet d'INTÉGRATION référençant 10 policies golden (LinkLevel #43, StormControl #46, PFC #44, DPP×2 #11, AAEP #42 + cdp/lldp/stp/mcp existants). macsec-if omis (réf macsecIfPol=keychain secret). 11 attrs.
+
+**✅ #87 monitoring-policy (common)** (2026-07-01, 630 attrs, plan No changes). La *common* monitoring policy fabric (uni/fabric/moncommon, `if pol.name=='common'`). Fonction `capture_common_monitoring` dédiée : source syslog (syslogSrc : flags audit/events/faults/session via `incl` [gère 'all'] + minSev + syslogRsDestGroup->slgroup réf #48). Entrée {name: common, syslogs:[...]} APPEND à fabric_policies.monitoring.policies. snmp source (réf snmp-trap group #76 déféré) omis. 6 attrs.
+
+**✅ #86 tenant-span dest-group + source-group** (2026-07-01, 624 attrs, plan No changes). 2 modules (spanDestGrp/spanSrcGrp tenant, uni/tn-). Base name/desc/admin_state captée par le générique (subpaths policies.span.destination_groups / .source_groups) ; relations enrichies (spanRsDestEpg dscp/flow/mtu/ttl/ver/verEnforced/ip/prefix/dest-EPG ; spanSpanLbl destination=STRING [≠ access où dict] ; spanSrc + spanRsSrcToEpg). Réutilise la logique #37/#40/#41 en mode enrichissement byname. 20 attrs.
+
+**✅ #85 tenant-monitoring-policy** (2026-07-01, 604 attrs, plan No changes). `monEPGPol` (tenant.policies.monitoring.policies). Base captée par le générique (subpath policies.monitoring.policies) ; `fault_severity_policies` (monEPGTarget/faultSevAsnP, même logique que #14) via **ENRICHISSEMENT** de l'entrée générique (PAS append -> sinon DOUBLON car le générique capture déjà la base). snmp/syslog sources = réfs fabric groups -> omis. PIÈGES : (1) fault_id doit être un code RÉEL connu de l'APIC (F1234 -> Error 104 Invalid RN ; F1545/F0467 OK) ; (2) enrichir l'entrée byname existante, ne pas ajouter via res (le nesting policies.monitoring.policies est déjà peuplé par le générique). 6 attrs.
+
+**✅ #84 infra-dhcp-relay-policy** (2026-07-01, 598 attrs, plan No changes). `dhcpRelayP` owner=infra (uni/infra/relayp-) sous `access_policies.dhcp_relay_policies` — miroir infra du dhcp-relay tenant #66. Fonction `capture_infra_dhcp_relay_policies` dédiée (providers dhcpRsProv -> epg/l3out). PIÈGE : un `relayp-default` SYSTÈME existe sous uni/infra -> filtre name=='default' (sinon drift 1-to-add). 6 attrs.
+
+**✅ #83 qos-policy (tenant)** (2026-07-01, 592 attrs, plan No changes). `qosCustomPol` (tenant.policies.qos). Base name/alias/description captée par le générique ; enfants `dscp_priority_maps` (qosDscpClass) + `dot1p_classifiers` (qosDot1PClass) = for_each dérivés -> **enrichissement dédié** dans capture_tenant_policies (from/to/priority/dscp_target/cos_target ; _num pour dot1p/cos, DSCP keyword reste str ; filtre défauts level3/unspecified). 12 attrs.
+
+**✅ #82 netflow-exporter + netflow-monitor ACCESS** (2026-07-01, 580 attrs, plan No changes). Miroirs access (uni/infra) de #68 tenant. Base netflowExporterPol/MonitorPol captée par capture_flat (exclut /tn-) ; relations (exporter->VRF/EPG netflowRsExporterToCtx/EPg, monitor->record/exporters netflowRsMonitorToRecord/Exporter) via **enrichissement dédié filtré /infra/** dans cmd_capture. GOLD-AccessNFExporter (base) + GOLD-AccessNFMonitor (ref GOLD-NetflowRecord #45 + GOLD-AccessNFExporter). source_ip masque ≤/20 (leçon #68).
+
+**✅ #81 port-channel-policy** (2026-07-01, 571 attrs, plan No changes). `lacpLagPol`. mode/min/max captés générique ; `ctrl` = `join(",", local.ctrl)` (concat des flags dans un LOCAL, pas inline) → NON vu par le handler flag → **enrichissement dédié** (reverse flags fast_select_standby/graceful_convergence/load_defer/suspend_individual/symmetric_hash + hash_key l2LoadBalancePol). Écrit les 5 flags sur TOUS les port-channels (existants inclus, idempotent). ⚠️ `load-defer` NON supporté sim (Error 182) → testé via `suspend_individual: false`. LEÇON : `join(",",local.X)` ≠ `join(",",concat(...))` inline pour le handler flag.
+
+**✅ #80 vlan-pool + physical-domain + routed-domain** (2026-07-01, 563 attrs, plan No changes). 3 modules access déjà capturés par `capture_access` (PHASE2) mais jamais golden-testés → objets GOLD- dédiés ajoutés. GOLD-VLAN-Pool (allocation static + range from/to/role/allocMode/descr) ; GOLD-PhysDomain + GOLD-RoutedDomain (name + vlan_pool via infraRsVlanNs). Zéro code (capture existante). Début de la campagne « 18 tractables non golden-testés » demandée par l'utilisateur.
+
+**✅ #79 management-access-policy** (2026-07-01, 554 attrs, plan No changes). `commPol` (uni/fabric/comm-) sous `pod_policies.management_access_policies`. Fonction `capture_management_access_policies` dédiée : sous-objets imbriqués telnet (admin_state/port) + ssh (admin_state/password_auth/port) + http (admin_state/port). ⚠️ **HTTPS port/dh NON round-trippables** : le sim 6.0(7e) refuse de les changer (Error 182 « Failed to update », HTTPS verrouillé port 443) → bloc https RETIRÉ du golden. Flags cipher/mac/kex/tls (sshCiphers/sshMacs/kexAlgos/sslProtocols) + keyring ref OMIS (défauts idempotents — le module les repose). 7 attrs. LEÇON : les objets telnet/ssh/https/http sont TOUJOURS créés (pas de guard) ; un apply partiel (Error 182 sur https) laisse les autres créés — la capture réécrit https à sa vraie valeur (443), aligner le golden dessus.
+
+**✅ #78 fabric-pod-policy-group** (2026-07-01, 547 attrs, plan No changes). `fabricPodPGrp` (uni/fabric/funcprof/podpgrp-) sous `fabric_policies.pod_policy_groups`. Fonction `capture_fabric_pod_policy_groups` dédiée : name/desc + 5 relations (fabricRsSnmpPol→snmp_policy, fabricRsTimePol→date_time_policy, fabricRsCommPol→management_access_policy, fabricRsMacsecPol→macsec_policy, fabricRsPodPGrpBGPRRP→bgp_route_reflector_policy) ; relations vides omises. **Fédère GOLD-SNMP (#75) + GOLD-DateTime (#77)** + bgp-rr 'default'. 4 attrs. NB : management-access-policy DÉFÉRÉ (lourd : commPol + 4 sous-objets telnet/ssh/https/http + dizaines de flags).
+
+**✅ #77 date-time-policy (fabric)** (2026-07-01, 543 attrs, plan No changes). `datetimePol` (uni/fabric/time-) sous `pod_policies.date_time_policies`. Fonction `capture_date_time_policies` dédiée : base (StratumValue + 4 bools adminSt/authSt/serverState/masterMode reversés) + ntp_servers (datetimeNtpProv name→hostname_ip + preferred). ntp_keys (datetimeNtpAuthKey) = SECRETS omis ; mgmt_epg (rsNtpProvToEpg→inb-default) omis (pattern #76, idempotent). 7 attrs.
+
+**✅ #76 dns-policy (fabric)** (2026-07-01, 536 attrs, plan No changes). `dnsProfile` (uni/fabric/dnsp-) sous `fabric_policies.dns_policies`. Fonction `capture_dns_policies` dédiée : providers (dnsProv addr→ip + preferred yes/no) + domains (dnsDomain name + isDefault yes/no). mgmt_epg (dnsRsProfileToEpg → inb-default) OMIS du golden : le module le recrée toujours par défaut (binding EPG système inband, idempotent — vérifié plan No changes). 3 attrs. NB : **snmp-trap-policy (#76 initial) DÉFÉRÉ** — les destinations exigent `community` (secName=SECRET sans défaut) + mgmt_epg mandatory → round-trip des destinations non prouvable ; pivot vers dns-policy (aucun secret).
+
+**✅ #75 snmp-policy (fabric)** (2026-07-01, 533 attrs, plan No changes). Premier objet FABRIC multi-enfants golden-testé de la série bonus. `snmpPol` sous `uni/fabric/snmppol-` → clé `fabric_policies.pod_policies.snmp_policies` (IMBRIQUÉE — la comparaison test_nac.py est récursive, gère le nesting). Fonction `capture_snmp_policies` dédiée : base (adminSt/loc/contact) + communities (snmpCommunityP, set) + trap_forwarders (snmpTrapFwdServerP, keyé ip, port≠162). OMIS : users (snmpUserP = SECRETS authKey/privKey), clients (snmpClientGrpP liés au mgmt_epg node_policies). Wiring cmd_capture : `flat["fabric_policies"].setdefault("pod_policies",{})["snmp_policies"]`. Filtre pol système name=='default'. 6 attrs.
+
+**✅ #74 bgp-route-summarization-policy** (2026-07-01, 527 attrs, plan No changes). `bgpRtSummPol`. **Zéro code dédié** : ctrl=flags (as-set/summary-only) + addrTCtrl=flags (af-mcast/af-ucast) — malgré le ternaire tordu `join(concat(...)) == "af-ucast" ? null : join(concat(...))`, le handler flag matche car l'expr commence par `join(` + contient `concat(` (les paires `var.X?["flag"]` sont trouvées même en double, sans effet). 4 attrs.
+
+**✅ #73 BGP flat policies × 3** (2026-07-01, 522 attrs, plan No changes). **Zéro code dédié** (générique) : bgp-address-family-context (`bgpCtxAfPol` : ctrl host-rt-leak bool implicite + eDist/iDist/localDist/maxEcmp/maxEcmpIbgp direct + maxLocalEcmp numnull) ; bgp-best-path (`bgpBestPathCtrlPol` : ctrl flags concat) ; bgp-timer (`bgpCtxPol` : grCtrl helper bool implicite + holdIntvl/kaIntvl/maxAsLimit/staleIntvl). ⚠️ **2 attrs auto-ignorés par le sim 6.0(7e)** (détectés par la comparaison + confirmés par POST REST direct) : (1) `ignoreIgpMetric` NON supporté (ctrl ne garde que asPathMultipathRelax) → non round-trippable ; (2) `staleIntvl=300` = la valeur par DÉFAUT calculée par l'APIC → stocké comme 'default' (utiliser une valeur ≠ défaut, ex 360, qui round-trippe — vérifié). LEÇON : certains numériques ont un « défaut calculé » côté APIC (300 pour stale) → poser ce nombre = poser le défaut = sentinelle 'default' capturée. Miroir de bfd startupIntvl (#21).
+
+**✅ #72 bgp-peer-prefix-policy** (2026-07-01, 505 attrs, plan No changes). `bgpPeerPfxPol` policy plate tenant. **Zéro code dédié** : action/maxPfx/thresh/restartTime tous directs. 5 attrs. (Note : `restart_time` = string dans le module mais capturé/comparé en entier via _num.) NB découverte : `vxlan-custom-qos-policy` = INFRA-ONLY (uni/tn-infra, tenant système) + rules for_each dérivées → DÉFÉRÉ (touche tenant système + capture dédiée).
+
+**✅ #71 nd-ra-prefix-policy** (2026-07-01, 500 attrs, plan No changes). `ndPfxPol` policy plate tenant. **Zéro code dédié** : `ctrl=join(",",concat(...))` avec conditionnels `var.x?["flag"]` → handler "flag" du moteur (auto_configuration/on_link/router_address, tous captés même à false). lifetime/prefLifetime numériques directs. 6 attrs. 🎯 **500 attrs golden franchis.**
+
+**✅ #70 hsrp-group-policy** (2026-07-01, 494 attrs, plan No changes). `hsrpGroupPol` policy plate tenant (`policies.hsrp_group_policies`). **Zéro code dédié** (générique) : `preempt`→`ctrl='preempt'` (bool implicite _RE_BOOL) ; reste numérique/direct (hello/hold_interval, priority, preempt_delay_min/reload/max, timeout, auth_type→type). ⚠️ `auth_key` (key) = **SECRET** (ignore_changes dans le module) → omis du golden. 10 attrs non-défaut.
+
+**✅ #69 nd-interface-policy** (2026-07-01, 484 attrs, plan No changes). `ndIfPol` policy plate tenant (`policies.nd_interface_policies`), miroir de igmp/pim #63/#64. **Zéro code dédié** : tout capté par le moteur générique — `controller_state` via `ctrl=join(",",...)` (_RE_JOIN→list) ; `nud_retransmit_base/interval/count` via `!= 0 ? : null` (_RE_NUMNULL→direct) ; reste numérique direct. 13 attrs non-défaut (hop_limit/ns_tx_interval/mtu/retransmit_*/nud_*/route_advertise_interval/router_lifetime/reachable_time/retransmit_timer).
+
+**✅ #68 tenant-netflow record/exporter/monitor** (2026-07-01, 471 attrs, plan No changes). 3 modules d'un coup (`netflowRecordPol`/`netflowExporterPol`/`netflowMonitorPol`, tous hors PHASE2 → objets de base captés par le générique). Enrichissements dédiés dans `capture_tenant_policies` : `match_parameters` du record (join+sort non parsé, split sur `,` comme #45 mais scope tenant) ; relation exporter→VRF (`netflowRsExporterToCtx`→`vrf`) + exporter→EPG/L3Out (`netflowRsExporterToEPg`→epg_type/ap/epg ou l3out/ext-epg) ; relations monitor→record (`netflowRsMonitorToRecord`→`flow_record`) + monitor→exporters (`netflowRsMonitorToExporter` for_each→`flow_exporters`). PIÈGES APIC 6.0(7e) : exporter `source_ip` (srcAddr) exige un **masque ≤ /20** (une IP /32 → Error 105 « can only have a mask up to /20 ») ; custom-src-ip exige `source_ip` ; `destination_port` capturé en **entier** (pas string). LEÇON confirmée : après un apply partiel (Error 105), la `capture` a retiré exporter+monitor de `data/` (binding non créé) — corriger l'attribut, ré-ajouter à `data/`, replan/sync.
+
+**Reprendre (optionnel) au module #67** : ultimes bonus : **multicast-route-map (`pimRouteMapPol`)** (tenant) ; **tenant-netflow-record/exporter/monitor** (miroirs tenant des netflow access #45) ; **useg-endpoint-group** (criteria). Tout le reste = limites assumées (cf section dédiée). **Le travail de fond est TERMINÉ** — ajouts marginaux. L'état fabric est propre, le cœur + access/fabric + SPAN + policies sont couverts et documentés.
+
+> ⚠️ AUDIT À FAIRE : d'autres modules marqués ✅ via le moteur générique peuvent n'avoir capturé que `name` (cas `content=merge()` ou `for_each` sur liste dérivée). Passer en revue les modules "0 attrs" cochés.
+
+## Bilan de session (2026-06-30) — modules #31 → #61
+
+**~115/195 modules cochés** dans MODULE_COVERAGE.md. **422 attributs** round-trippés à 100% sur le jeu golden, `plan = No changes`, état `data ↔ fabric ↔ state` cohérent à chaque étape.
+
+**Domaines entièrement couverts (golden méthode B) :**
+- **Cœur tenant** : tenant, vrf (#59), bridge-domain (#56), endpoint-group (#57), contract+filter (#58), application_profile (GOLD-AP), l3out (#60) + sous-objets L3Out (node/interface profiles, OSPF/BGP/BFD, ESG, route-maps #2–8, default-route-leak #13).
+- **SPAN/vspan** : access (filter #36, dest #37, source #40), vspan (dest #38, session #39), fabric (#41).
+- **Switch profiles+PG** : access leaf (#49/#50), access spine (#51), fabric leaf (#52), fabric spine (#53).
+- **Interface selectors** : leaf access (#9), spine access (#35), fabric leaf/spine (#17/#18).
+- **Policies plates** : link-level (#43), pfc (#44), netflow-record (#45), storm-control (#46), ptp (#47), syslog (#48), bfd/psu/macsec/dpp/monitoring/config-export/scheduler/update-groups (#11–24).
+- **Services L4L7 légers** : redirect health-group/policy/backup (#29–31), service-epg-policy (#32), track-list/member (#33/#34).
+- **mgmt** : oob/inband contracts/epg/ext-mgmt (#25–28). **tags** : mac-tag (#55), ip-tag (#61). **aaep** (#42).
+
+**Patterns/correctifs transverses acquis cette session** : regex flag généralisée (`var.x?[...]` sans `==true`, #54) ; gestion des `content=merge()` et des `for_each` sur listes dérivées (capture dédiée) ; reverse de ternaires/conditionnels non parsés par `attr_map` (autoNeg, adminSt, configuration_type, profileTemplate, mcastARPDrop, enforceRtctrl…) ; exclusion systématique des défauts système (uid=0 / name=='default') et filtrage de scope pour les classes ambiguës (spanDestGrp/spanSrcGrp access vs fabric) ; `_keyof` étendu (mac/key). Plusieurs **contraintes APIC** documentées (proxy⊥encap-flood, enhanced-log⊥udp/ms-tz, telecom-ptp intervalles fixes, overlap interfaces nœud système, span-on-drop⊥binding/filter).
+
+## Limites assumées — modules NON golden-testables (justifiées)
+
+> ⚠️ RÉVISION 2026-07-01/02 (vagues 1-2) : cette liste n'était pas définitive. SORTIS et testés : `geolocation` #91, `mpls-custom-qos` #92 (patron infra), `mst-policy` #93 et `vpc-group` #94 (reclassés — pas des singletons), + **11 singletons testés par MÉTHODE C** (#95, mutation réversible `tools/methodec.py` : banner, atomic-counter, control-plane-mtu, endpoint-loop-protection, error-disabled-recovery, health-score, port-tracking, sr-mpls, qos, bgp-policy, aaa). ENTRÉS en limites définitives : `vxlan-custom-qos`, `border-gateway-set-policy`, `remote-vxlan-fabric-policy` (classes vxlan*/qosVxlan* absentes du data model 6.0(7e), vérifié REST). Pistes restantes chiffrées dans le TL;DR du point de reprise.
+
+Les 35 modules restants relèvent des catégories suivantes :
+
+1. **SECRETS non round-trippables** (l'APIC ne renvoie jamais la valeur secrète → impossible de prouver l'aller-retour) : `login-domain`, `radius`, `tacacs`, `ldap`, `keyring` (pkiKeyRing), `ca-certificate` (pkiTP), `mcp` (mot de passe), `macsec-keychain-policies`, `smart-licensing` (token CSSM), `user` (aaaUser mot de passe), `remote-location` (auth). Déjà en `PHASE2_MODULES`/`DISABLE_MODULES`. → documenter, ne pas tenter.
+
+2. **SINGLETONS** (un seul objet par fabric, DN `default` — un golden ÉCRASERAIT la vraie config, interdit par TEST_PLAN) : `port-tracking`, `endpoint-loop-protection`, `control-plane-mtu`, `pod-setup`, `banner`, `error-disabled-recovery`, `qos` (global), `mst-policy`, et les globaux date-time/dns/coop/isis/bgp-route-reflector. Validés autrement : `capture_singletons` les lit à leurs vraies valeurs et `plan = No changes` prouve l'aller-retour. → pas de golden.
+
+3. **L4L7 DEEP** (lourds, nombreux enfants, dépendances device) : `service-graph-template` (vnsAbsGraph, 31 enfants), `l4l7-device` (vnsLDevVip), `imported-l4l7-device` (vnsLDevIf), `device-selection-policy` (39 enfants). → hors scope simulateur.
+
+4. **NODE BINDINGS / REGISTRATION** (touchent l'enregistrement physique des nœuds, risqué) : `inband-node-address`, `oob-node-address`, `node-registration` (fabricNodeIdentP), `rbac-node-rule` (dérive de node_policies.nodes.security_domains).
+
+5. **VMM domains** (vCenter : nécessite credentials + connexion externe) : `vmware-vmm-domain`, `nutanix-vmm-domain`.
+
+6. **INCOMPATIBLE avec ce déploiement** : `interface-configuration` (infraPortConfig) et `fabric-interface-configuration` (fabricPortConfig) exigent le flag global `new_interface_configuration=true` (nouveau paradigme per-port) — ce projet utilise le VIEUX style (switch/interface profiles + sélecteurs). Activer basculerait tout le modèle.
+
+7. **PAS DE MATÉRIEL** sur le simulateur : `access-fex-interface-profile/selector` (infraFexP — aucun FEX), `switch-configuration` (assocGrp).
+
+8. **Cœur restant non golden-testé mais round-trippé dans la vraie config** (plan No changes, capture générique OK) : `physical-domain`, `routed-domain`, `vlan-pool`, `port-channel-policy`, `application_profile`, `useg-endpoint-group`, divers netflow/qos/dhcp policies tenant. Golden-testables si besoin futur, mais déjà fonctionnels.
+
+## Pistes futures (optionnel)
+- Commande `test_nac.py golden` pour le « test d'une frappe » global (recréer tout `tests/golden/` sur fabric vierge).
+- Repasser #1-3 en méthode B (déjà solides).
+- ⚠️ Toujours nettoyer le mot de passe en dur dans `main.tf` AVANT tout commit.

@@ -1,0 +1,48 @@
+###############################################################################
+# ACI NaC Fabric Sync — configuration Terraform racine
+#
+# Copiez ce fichier vers main.tf puis renseignez la connexion APIC.
+# NE COMMITEZ JAMAIS main.tf (il est dans .gitignore).
+#
+# Deux façons de fournir les identifiants :
+#   1. Variables d'environnement (recommandé, rien dans le fichier) :
+#        export ACI_URL=https://<apic> ACI_USERNAME=admin ACI_PASSWORD=...   (terraform)
+#        export APIC_URL=https://<apic> APIC_USER=admin APIC_PWD=...          (tools/nac.py)
+#   2. En clair ci-dessous (lab uniquement) — nac.py les lira aussi.
+###############################################################################
+
+terraform {
+  required_version = ">= 1.8.0"
+
+  required_providers {
+    aci = {
+      source = "CiscoDevNet/aci"
+    }
+  }
+}
+
+provider "aci" {
+  # username = "admin"                # ou env ACI_USERNAME
+  # password = "CHANGE-ME"            # ou env ACI_PASSWORD
+  # url      = "https://192.0.2.1"    # ou env ACI_URL
+  insecure = true # simulateur / certificat self-signed
+}
+
+###############################################################################
+# Module Network as Code pour ACI
+#   - yaml_directories : les fichiers *.nac.yaml produits par `nac.py capture`
+#   - manage_*         : les SIX sections gérées (contrôle complet)
+###############################################################################
+module "aci" {
+  source                    = "netascode/nac-aci/aci"
+  version                   = "2.0.0"
+  write_default_values_file = "./defaults_effectifs.yaml"
+  yaml_directories          = ["data"]
+
+  manage_fabric_policies    = true
+  manage_access_policies    = true
+  manage_pod_policies       = true
+  manage_node_policies      = true
+  manage_interface_policies = true
+  manage_tenants            = true
+}

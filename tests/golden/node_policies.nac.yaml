@@ -1,0 +1,35 @@
+# Jeu de test golden — section node_policies (méthode B). Préfixe GOLD-.
+---
+apic:
+  node_policies:
+    # ── MODULES #104-#105 : oob/inband-node-address (mgmtRsOoBStNode/mgmtRsInBStNode) ──
+    # Noeud FICTIF 103 avec role 'unspecified' : HORS de tous les filtres for_each
+    # (node_registration, rbac, profils auto = role leaf/spine uniquement).
+    # ⚠️ node-1 (l'APIC) exclu de la capture : son adresse OOB est NOTRE acces.
+    inb_endpoint_group: GOLD-InB-EPG        # EPG inband des adresses statiques (réf #28, vlan 100)
+    nodes:
+    - id: 103
+      role: unspecified
+      oob_address: 172.16.99.103/24
+      oob_gateway: 172.16.99.1
+      oob_v6_address: 2001:db8:99::103/64
+      oob_v6_gateway: 2001:db8:99::1
+      inb_address: 10.97.0.103/24            # subnet du GOLD-InB-EPG (#28)
+      inb_gateway: 10.97.0.1
+    # ── MODULE #94 : vpc-group (fabricExplicitGEp + fabricNodePEp + fabricRsVpcInstPol) ──
+    # groups = objets nommés ADDITIFS (seul fabricProtPol.mode est un singleton, non
+    # goldenisé). Paire GOLD sur les nœuds libres 103/104.
+    vpc_groups:
+      groups:
+      - name: GOLD-VPC-Group
+        id: 103
+        switch_1: 103
+        switch_2: 104
+        policy: default                  # fabricRsVpcInstPol -> vpcInstPol default
+    # ── MODULE #20 : firmware-group (firmwareFwP) + maintenance-group (via update_groups) ──
+    update_groups:
+    - name: GOLD-UpdateGrp
+      scheduler: GOLD-Sched            # réf scheduler de #19 (utilisé par maintenance group)
+    # NOTE : pas de node_policies.nodes -> groupe vide. Assigner un nœud nécessiterait
+    # node.role (sinon erreur node_registration), qui déclencherait le ré-enregistrement
+    # du nœud (risqué en brownfield). Node block non testé volontairement.

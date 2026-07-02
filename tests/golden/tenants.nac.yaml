@@ -1,0 +1,682 @@
+# Jeu de test golden — section tenants (méthode B, tous attributs non-défaut).
+# Voir tests/golden/README.md. Préfixe GOLD-/GOLDEN. Additif et namespacé.
+---
+apic:
+  tenants:
+  # ── MODULE #25 : oob-contract (vzOOBBrCP) — sous tenant mgmt ──
+  - name: mgmt
+    managed: false                       # tenant système : NE PAS gérer le fvTenant
+    oob_contracts:
+    - name: GOLD-OOB-Contract
+      description: OOB contract golden
+      scope: global                      # non-defaut (context)
+    # ── MODULE #26 : oob-endpoint-group (mgmtOoB) ──
+    oob_endpoint_groups:
+    - name: GOLD-OOB-EPG
+      oob_contracts:                     # bloc imbriqué (data model)
+        providers:
+        - GOLD-OOB-Contract              # réf contrat #25 (mgmtRsOoBProv)
+      # static_routes : exige des bindings node OOB (mgmtRsOoBStNode / oob-node-address) -> non testé
+    # ── MODULE #28 : inband-endpoint-group (mgmtInB) ──
+    inb_endpoint_groups:
+    - name: GOLD-InB-EPG
+      vlan: 100                          # encap vlan-100
+      bridge_domain: inb                 # BD inband système
+      subnets:
+      - ip: 10.97.0.1/24
+        description: GOLD inband subnet
+    # ── MODULE #27 : oob-external-management-instance (mgmtInstP) ──
+    ext_mgmt_instances:
+    - name: GOLD-ExtMgmt
+      subnets:
+      - 10.96.0.0/16                     # mgmtSubnet
+      oob_contracts:
+        consumers:
+        - GOLD-OOB-Contract              # consomme contrat #25 (mgmtRsOoBCons)
+  # ── MODULE #92 : mpls-custom-qos-policy (qosMplsCustomPol) — sous tenant infra ──
+  # (patron tenant système #25). vxlan-custom-qos NON testable : classes qosVxlan*
+  # absentes de l'APIC 6.0(7e) ("unresolved class").
+  - name: infra
+    managed: false                       # tenant système : NE PAS gérer le fvTenant
+    policies:
+      mpls_custom_qos_policies:
+      - name: GOLD-MplsQoS
+        alias: GOLD-MplsQoS-Alias
+        description: MPLS custom QoS golden
+        ingress_rules:                   # qosMplsIngressRule (exp -> prio/dscp/cos)
+        - exp_from: 2
+          exp_to: 3
+          priority: level4               # non-defaut (unspecified)
+          dscp_target: AF21              # non-defaut (unspecified)
+          cos_target: 5                  # non-defaut (unspecified)
+        egress_rules:                    # qosMplsEgressRule (dscp -> exp/cos)
+        - dscp_from: AF11
+          dscp_to: AF13
+          exp_target: 4                  # non-defaut (unspecified)
+          cos_target: 6                  # non-defaut (unspecified)
+  - name: GOLDEN
+    description: Tenant de test golden (methode B)
+    alias: GOLD-TenantAlias                 # ── MODULE #90 : tenant (fvTenant) nameAlias ──
+    # ── MODULE #29 : redirect-health-group + #30 : redirect-policy (PBR) ──
+    services:
+      redirect_health_groups:
+      - name: GOLD-HealthGroup
+        description: Health group golden
+      redirect_policies:
+      - name: GOLD-Redirect
+        description: PBR golden
+        hashing: dip                     # non-defaut (sip-dip-prototype)
+        threshold: true                  # non-defaut (false)
+        max_threshold: 80
+        min_threshold: 20
+        threshold_down_action: deny       # non-defaut (permit)
+        resilient_hashing: true           # non-defaut (false)
+        l3_destinations:
+        - name: GOLD-Dest
+          ip: 10.98.0.1
+          mac: '00:11:22:33:44:66'
+          redirect_health_group: GOLD-HealthGroup   # réf #29
+      # ── MODULE #31 : redirect-backup-policy (vnsBackupPol) ──
+      redirect_backup_policies:
+      - name: GOLD-BackupPol
+        description: Backup PBR golden            # non-defaut ('')
+        l3_destinations:
+        - destination_name: GOLD-BackupDest       # clé destination_name (≠ redirect_policies)
+          ip: 10.99.0.1
+          ip_2: 10.99.0.2                          # non-defaut (0.0.0.0)
+          mac: '00:11:22:33:44:77'                 # non-defaut (00:00:00:00:00:00)
+          redirect_health_group: GOLD-HealthGroup  # réf #29
+      # ── MODULE #32 : service-epg-policy (vnsSvcEPgPol) ──
+      service_epg_policies:
+      - name: GOLD-SvcEPgPol
+        description: Service EPG policy golden    # non-defaut ('')
+        preferred_group: true                      # non-defaut (false -> prefGrMemb exclude)
+      # ── MODULES #107-#109 : L4L7 PHYSICAL — l4l7-device + service-graph-template
+      # (mode single-device) + device-selection-policy. Objets logiques purs, aucun
+      # déploiement. VIRTUAL/VMM + multi-device = hors sim ──
+      l4l7_devices:
+      - name: GOLD-L4L7-FW
+        alias: GOLD-FW-alias
+        context_aware: multi-Context       # non-defaut (single-Context)
+        service_type: ADC                  # non-defaut (FW)
+        promiscuous_mode: true             # non-defaut (false)
+        physical_domain: GOLD-PhysDomain   # réf #80 (vnsRsALDevToPhysDomP)
+        concrete_devices:
+        - name: GOLD-CDev
+          interfaces:
+          - name: GOLD-CIf
+            node_id: 103                   # noeud libre
+            module: 1
+            port: 30
+        logical_interfaces:
+        - name: GOLD-LIf-ext
+          vlan: 3100                       # -> vnsLIf encap vlan-3100
+          concrete_interfaces:
+          - device: GOLD-CDev
+            interface_name: GOLD-CIf       # -> vnsRsCIfAttN
+        - name: GOLD-LIf-int
+          vlan: 3101
+          concrete_interfaces:
+          - device: GOLD-CDev
+            interface_name: GOLD-CIf
+      service_graph_templates:
+      - name: GOLD-SGT
+        description: Service graph template golden
+        alias: GOLD-SGT-alias
+        redirect: true                     # non-defaut -> vnsAbsNode routingMode Redirect
+        device:
+          name: GOLD-L4L7-FW               # -> vnsRsNodeToLDev
+      device_selection_policies:
+      - contract: GOLD-Contract            # réf #58 -> vnsLDevCtx ctrctNameOrLbl
+        service_graph_template: GOLD-SGT
+        consumer:
+          logical_interface: GOLD-LIf-ext  # -> vnsRsLIfCtxToLIf
+          bridge_domain:
+            name: GOLD-BD                  # réf #56 -> vnsRsLIfCtxToBD
+          redirect_policy:
+            name: GOLD-Redirect            # réf #30 PBR -> vnsRsLIfCtxToSvcRedirectPol
+          permit_logging: true             # non-defaut (false)
+        provider:
+          logical_interface: GOLD-LIf-int
+          bridge_domain:
+            name: GOLD-BD
+          l3_destination: false            # non-defaut (true)
+    # ── MODULE #10 : imported-contract (vzCPIf) ──
+    imported_contracts:
+    - name: GOLD-ImportedContract
+      tenant: Common                          # source_tenant
+      contract: Mgmt_Access_Contract          # source_contract (scope global) -> vzRsIf
+    policies:
+      # ── MODULES #33 track-list (fvTrackList) + #34 track-member (fvTrackMember) ──
+      # ip_sla policy support (déjà couvert génériquement) — réf par le track-member
+      ip_sla_policies:
+      - name: GOLD-IPSLA
+        multiplier: 5                        # non-defaut (3)
+        frequency: 30                        # non-defaut (60)
+        sla_type: tcp                        # non-defaut (icmp)
+        port: 8080                           # non-defaut (0)
+      track_members:                          # #34 fvTrackMember
+      - name: GOLD-TrackMember
+        description: Track member golden     # non-defaut ('')
+        destination_ip: 10.97.0.1            # dstIpAddr
+        scope_type: l3out                    # -> scopeDn .../out-<scope>
+        scope: GOLD-L3Out                    # réf l3out GOLDEN (#2)
+        ip_sla_policy: GOLD-IPSLA            # -> fvRsIpslaMonPol
+      track_lists:                            # #33 fvTrackList
+      - name: GOLD-TrackList
+        description: Track list golden       # non-defaut ('')
+        type: weight                         # non-defaut (percentage)
+        percentage_up: 75                    # non-defaut (1)
+        percentage_down: 25                  # non-defaut (0)
+        weight_up: 8                         # non-defaut (1)
+        weight_down: 4                       # non-defaut (0)
+        track_members:                        # -> fvRsOtmListMember
+        - GOLD-TrackMember
+      # policies tenant référencées par les ospf/bfd interface profiles (module #5)
+      ospf_interface_policies:
+      - name: GOLD-OSPF-IfPol
+      bfd_interface_policies:
+      - name: GOLD-BFD-IfPol
+      # ── MODULE #55 : endpoint-mac-tag-policy (fvEpMacTag) — bdName/ctxName ternaires + tags ──
+      endpoint_mac_tags:
+      - mac: '00:11:22:33:44:88'            # uppercase (module fait upper())
+        bridge_domain: all                  # -> bdName '*' + ctxName=vrf
+        vrf: GOLD-VRF                        # réf vrf GOLDEN
+        tags:
+        - key: GOLD-tagkey
+          value: GOLD-tagval
+      # ── MODULE #61 : endpoint-ip-tag-policy (fvEpIpTag) — miroir IP de #55 ──
+      endpoint_ip_tags:
+      - ip: 10.96.0.5
+        vrf: GOLD-VRF
+        tags:
+        - key: GOLD-iptagkey
+          value: GOLD-iptagval
+      # ── MODULE #66 : dhcp-relay-policy (dhcpRelayP) + dhcp-option-policy (dhcpOptionPol) ──
+      dhcp_relay_policies:
+      - name: GOLD-DhcpRelay
+        description: DHCP relay golden
+        providers:
+        - type: epg                          # -> dhcpRsProv tDn epg
+          tenant: GOLDEN
+          application_profile: GOLD-AP
+          endpoint_group: GOLD-EPG           # réf #57
+          ip: 10.94.0.10
+      dhcp_option_policies:
+      - name: GOLD-DhcpOption
+        description: DHCP option golden
+        options:
+        - name: GOLD-opt
+          id: 6                              # -> dhcpOption
+          data: 8.8.8.8
+      # ── MODULE #63 : igmp-interface-policy (igmpIfPol) — 13 attrs (ifCtrl flags + numériques + ver) ──
+      igmp_interface_policies:
+      - name: GOLD-IGMP-IfPol
+        grp_timeout: 300                     # non-defaut (260)
+        allow_v3_asm: true                   # non-defaut -> ifCtrl allow-v3-asm
+        fast_leave: true                     # non-defaut -> ifCtrl fast-leave
+        report_link_local_groups: true       # non-defaut -> ifCtrl rep-ll
+        last_member_count: 3                 # non-defaut (2)
+        last_member_response_time: 2         # non-defaut (1)
+        querier_timeout: 200                 # non-defaut (255) ; max 255
+        query_interval: 200                  # non-defaut (125)
+        robustness_variable: 3               # non-defaut (2)
+        query_response_interval: 20          # non-defaut (25)
+        startup_query_count: 3               # non-defaut (2)
+        startup_query_interval: 8            # non-defaut (31->clamp ; max 10)
+        version: v3                          # non-defaut (v2) -> ver (remap version_)
+      # ── MODULE #64 : pim-interface-policy (pimIfPol) — flags ctrl + numériques (auth=secret omis) ──
+      pim_policies:
+      - name: GOLD-PIM-IfPol
+        mcast_dom_boundary: true             # -> ctrl border
+        passive: true                        # -> ctrl passive
+        strict_rfc: true                     # -> ctrl strict-rfc-compliant
+        designated_router_delay: 5           # non-defaut (3)
+        designated_router_priority: 10       # non-defaut (1)
+        hello_interval: 60000                # non-defaut (30000)
+        join_prune_interval: 120             # non-defaut (60)
+      # ── MODULE #67 : multicast-route-map (pimRouteMapPol + pimRouteMapEntry) ──
+      # entries = for_each sur liste dérivée -> non vu par le moteur générique -> capture dédiée
+      multicast_route_maps:
+      - name: GOLD-MRM
+        description: Multicast route map golden # non-defaut ('')
+        entries:
+        - order: 10                            # rtmapentry-<order>
+          action: deny                         # non-defaut (permit)
+          source_ip: 10.67.1.0/24              # non-defaut (0.0.0.0) -> src
+          group_ip: 232.67.0.0/16             # non-defaut (0.0.0.0) -> grp
+          rp_ip: 10.67.2.2                    # non-defaut (0.0.0.0) -> rp
+      # ── MODULE #68 : tenant-netflow record/exporter/monitor (netflowRecordPol/ExporterPol/MonitorPol) ──
+      # match (join+sort) + relations (exporter->VRF, monitor->record/exporters) = captures dédiées
+      netflow_records:
+      - name: GOLD-NFRecord
+        description: Netflow record golden      # non-defaut ('')
+        match_parameters:                        # -> match (join+sort) ; capture dédiée (split)
+        - dst-ip
+        - proto
+        - src-ip
+      netflow_exporters:
+      - name: GOLD-NFExporter
+        description: Netflow exporter golden
+        destination_ip: 10.68.0.10               # -> dstAddr
+        destination_port: 2055                    # -> dstPort (capturé en entier)
+        dscp: AF11                               # non-defaut (CS2)
+        source_type: custom-src-ip               # -> sourceIpType (custom-src-ip exige source_ip)
+        source_ip: 10.68.0.0/20                   # -> srcAddr (APIC : masque ≤ /20 obligatoire)
+        vrf: GOLD-VRF                            # -> netflowRsExporterToCtx (relation dédiée)
+      netflow_monitors:
+      - name: GOLD-NFMonitor
+        description: Netflow monitor golden
+        flow_record: GOLD-NFRecord               # -> netflowRsMonitorToRecord (relation dédiée)
+        flow_exporters:                          # -> netflowRsMonitorToExporter for_each (relation dédiée)
+        - GOLD-NFExporter
+      # ── MODULE #69 : nd-interface-policy (ndIfPol) — policy plate, miroir de igmp/pim (#63/#64) ──
+      # tout capté par le moteur générique (ctrl=join->list, nud* = numnull->direct)
+      nd_interface_policies:
+      - name: GOLD-ND-IfPol
+        description: ND interface policy golden   # non-defaut ('')
+        controller_state:                          # -> ctrl (join ',')
+        - managed-cfg
+        - other-cfg
+        hop_limit: 32                              # non-defaut (64)
+        ns_tx_interval: 2000                       # non-defaut (1000)
+        mtu: 1500                                  # non-defaut (9000)
+        retransmit_retry_count: 5                  # non-defaut (3)
+        nud_retransmit_base: 2                     # non-defaut (0->null) -> nudRetryBase
+        nud_retransmit_interval: 2000              # non-defaut (0->null) -> nudRetryInterval
+        nud_retransmit_count: 5                    # non-defaut (0->null) -> nudRetryMaxAttempts
+        route_advertise_interval: 300              # non-defaut (600)
+        router_lifetime: 900                       # non-defaut (1800)
+        reachable_time: 5000                       # non-defaut (0)
+        retransmit_timer: 3000                     # non-defaut (0)
+      # ── MODULE #70 : hsrp-group-policy (hsrpGroupPol) — policy plate ; auth_key=SECRET omis ──
+      hsrp_group_policies:
+      - name: GOLD-HSRP-GrpPol
+        description: HSRP group policy golden       # non-defaut ('')
+        preempt: true                              # -> ctrl 'preempt' (bool implicite)
+        hello_interval: 5000                       # non-defaut (3000)
+        hold_interval: 15000                       # non-defaut (10000)
+        priority: 120                              # non-defaut (100)
+        auth_type: simple                          # -> type (HSRPv1)
+        preempt_delay_min: 30                      # non-defaut (0)
+        preempt_delay_reload: 60                   # non-defaut (0)
+        preempt_delay_max: 90                      # non-defaut (0) -> preemptDelaySync
+        timeout: 30                                # non-defaut (0)
+      # ── MODULE #71 : nd-ra-prefix-policy (ndPfxPol) — policy plate ; ctrl=flags concat (auto-cfg/on-link/router-address) ──
+      nd_ra_prefix_policies:
+      - name: GOLD-ND-RAPfx
+        description: ND RA prefix policy golden     # non-defaut ('')
+        auto_configuration: false                  # non-defaut (true) -> ctrl 'auto-cfg' absent
+        on_link: false                             # non-defaut (true) -> ctrl 'on-link' absent
+        router_address: true                       # non-defaut (false) -> ctrl 'router-address'
+        valid_lifetime: 3600000                    # non-defaut (2592000) -> lifetime
+        preferred_lifetime: 302400                 # non-defaut (604800) -> prefLifetime
+      # ── MODULE #72 : bgp-peer-prefix-policy (bgpPeerPfxPol) — policy plate, direct ──
+      bgp_peer_prefix_policies:
+      - name: GOLD-BGP-PfxPol
+        description: BGP peer prefix policy golden  # non-defaut ('')
+        action: log                                # non-defaut (reject) -> action
+        max_prefixes: 10000                        # non-defaut (20000) -> maxPfx
+        threshold: 90                              # non-defaut (75) -> thresh
+        restart_time: 300                          # non-defaut (65534) -> restartTime
+      # ── MODULE #73 : 3 policies BGP plates tenant (générique) ──
+      # bgp-address-family-context (bgpCtxAfPol)
+      bgp_address_family_context_policies:
+      - name: GOLD-BGP-AFCtx
+        description: BGP AF context golden          # non-defaut ('')
+        enable_host_route_leak: true               # non-defaut (false) -> ctrl host-rt-leak
+        ebgp_distance: 30                          # non-defaut (20) -> eDist
+        ibgp_distance: 150                         # non-defaut (200) -> iDist
+        local_distance: 210                        # non-defaut (220) -> localDist
+        local_max_ecmp: 8                          # non-defaut (0->null) -> maxLocalEcmp
+        ebgp_max_ecmp: 32                          # non-defaut (16) -> maxEcmp
+        ibgp_max_ecmp: 8                           # non-defaut (16) -> maxEcmpIbgp
+      # bgp-best-path (bgpBestPathCtrlPol) — ctrl=flags concat
+      bgp_best_path_policies:
+      - name: GOLD-BGP-BestPath
+        description: BGP best path golden           # non-defaut ('')
+        as_path_multipath_relax: true              # non-defaut (false) -> ctrl asPathMultipathRelax
+        ignore_igp_metric: false                   # ⚠️ ignoreIgpMetric NON supporté sim 6.0(7e) (auto-drop) -> non round-trippable
+      # bgp-timer (bgpCtxPol)
+      bgp_timer_policies:
+      - name: GOLD-BGP-Timer
+        description: BGP timer golden               # non-defaut ('')
+        graceful_restart_helper: true              # -> grCtrl helper (défaut true, capté)
+        hold_interval: 240                         # non-defaut (180) -> holdIntvl
+        keepalive_interval: 30                     # non-defaut (60) -> kaIntvl
+        maximum_as_limit: 5                        # non-defaut (0) -> maxAsLimit
+        stale_interval: 360                        # non-defaut ('default') -> staleIntvl (300=défaut calculé -> 'default')
+      # bgp-route-summarization (bgpRtSummPol) — ctrl=flags + addrTCtrl=flags conditionnel (==af-ucast?null)
+      bgp_route_summarization_policies:
+      - name: GOLD-BGP-RtSumm
+        description: BGP route summarization golden # non-defaut ('')
+        as_set: true                               # non-defaut (false) -> ctrl as-set
+        summary_only: true                         # non-defaut (false) -> ctrl summary-only
+        af_mcast: true                             # non-defaut (false) -> addrTCtrl af-mcast
+        af_ucast: true                             # défaut (true) -> addrTCtrl af-ucast (capté car addrTCtrl non-null)
+      # ── MODULE #83 : qos-policy (qosCustomPol) — enfants dscp_priority_maps + dot1p_classifiers (enrich) ──
+      qos:
+      - name: GOLD-QosCustom
+        description: QoS custom policy golden
+        alias: GOLD-QosAlias                        # -> nameAlias
+        dscp_priority_maps:                          # -> qosDscpClass
+        - dscp_from: AF12
+          dscp_to: AF13
+          priority: level5                           # non-defaut (level3)
+          dscp_target: CS0                           # non-defaut (unspecified)
+          cos_target: 5                              # non-defaut (unspecified)
+        dot1p_classifiers:                           # -> qosDot1PClass
+        - dot1p_from: 3
+          dot1p_to: 4
+          priority: level5
+          dscp_target: CS0
+          cos_target: 5
+      # ── MODULE #86 : tenant-span dest-group (spanDestGrp) + source-group (spanSrcGrp) ──
+      # base name/desc/admin_state générique ; relations (spanRsDestEpg, spanSpanLbl, spanSrc) enrichies
+      span:
+        destination_groups:
+        - name: GOLD-TenantSpanDest
+          description: Tenant SPAN dest golden
+          tenant: GOLDEN                            # -> spanRsDestEpg tDn
+          application_profile: GOLD-AP
+          endpoint_group: GOLD-EPG                  # réf #57
+          ip: 10.86.0.1
+          source_prefix: 10.86.0.0/24
+          dscp: CS4                                 # non-defaut (unspecified)
+          flow_id: 25                               # non-defaut (1)
+          mtu: 1500                                 # non-defaut (1518)
+          ttl: 32                                   # non-defaut (64)
+          version: 1                                # non-defaut (2)
+          enforce_version: true                     # non-defaut (false)
+        source_groups:
+        - name: GOLD-TenantSpanSrc
+          description: Tenant SPAN source golden
+          admin_state: true                         # non-defaut (false) -> adminSt
+          destination: GOLD-TenantSpanDest          # -> spanSpanLbl (string, réf dest group)
+          sources:                                   # -> spanSrc
+          - name: GOLD-TenantSrc
+            description: GOLD tenant source
+            direction: in                            # non-defaut (both)
+            tenant: GOLDEN                            # -> spanRsSrcToEpg tDn
+            application_profile: GOLD-AP
+            endpoint_group: GOLD-EPG
+      # ── MODULE #85 : tenant-monitoring-policy (monEPGPol) — fault_severity (monEPGTarget/faultSevAsnP) ──
+      # snmp/syslog sources = réfs fabric groups -> omis. Nesting policies.monitoring.policies.
+      monitoring:
+        policies:
+        - name: GOLD-TenantMonPol
+          description: Tenant monitoring policy golden
+          fault_severity_policies:
+          - class: fvBD                              # -> monEPGTarget scope (classe tenant)
+            faults:
+            - fault_id: F1545
+              initial_severity: warning
+              target_severity: critical
+              description: GOLD tenant fault override
+      # ── MODULE #54 : hsrp-interface-policy (hsrpIfPol) — flags ctrl implicites ──
+      hsrp_interface_policies:
+      - name: GOLD-HSRP-IfPol
+        bfd_enable: true                    # non-defaut (false) -> ctrl bfd
+        use_bia: true                       # non-defaut (false) -> ctrl bia
+        delay: 5                            # non-defaut (0)
+        reload_delay: 10                    # non-defaut (0)
+      # ── MODULE #7 : route-control-route-map (rtctrlProfile) + contexts ──
+      set_rules:
+      - name: GOLD-SetRule
+        community: 'no-advertise'           # rtctrlSetComm
+        community_mode: replace             # non-defaut (defaut append)
+        tag: 1000                           # rtctrlSetTag
+        weight: 50                          # rtctrlSetWeight
+        preference: 200                     # rtctrlSetPref (localPref)
+        metric: 300                         # rtctrlSetRtMetric
+        metric_type: ospf-type1             # rtctrlSetRtMetricType
+        next_hop: 10.60.0.1                 # rtctrlSetNh
+      match_rules:
+      - name: GOLD-MatchRule
+        prefixes:                           # rtctrlMatchRtDest
+        - ip: 10.70.0.0/16
+          description: GOLD match prefix
+          aggregate: false
+          from_length: 24                   # non-defaut (defaut 0)
+          to_length: 32                     # non-defaut (defaut 0)
+      route_control_route_maps:
+      - name: GOLD-RouteMap
+        type: global                       # non-defaut (defaut combinable)
+        description: Route map golden
+        contexts:
+        - name: GOLD-ctx1
+          description: GOLD context
+          action: deny                     # non-defaut (defaut permit)
+          order: 5                         # non-defaut (defaut 0)
+          set_rule: GOLD-SetRule           # -> rtctrlRsScopeToAttrP
+          match_rules:
+          - GOLD-MatchRule                 # -> rtctrlRsCtxPToSubjP
+    # ── MODULE #59 : vrf (fvCtx) — cœur, 6 attrs complets ──
+    vrfs:
+    - name: GOLD-VRF
+      alias: GOLD-VRF-alias                  # non-defaut -> nameAlias
+      description: VRF golden                 # non-defaut -> descr
+      data_plane_learning: false             # non-defaut (true)
+      enforcement_direction: egress          # non-defaut (ingress)
+      enforcement_preference: unenforced     # non-defaut (enforced)
+    # ── MODULE #56 : bridge-domain (fvBD) — cœur, 14 attrs non-défaut + subnet ──
+    bridge_domains:
+    - name: GOLD-BD
+      alias: GOLD-BD-alias
+      description: BD golden
+      vrf: GOLD-VRF
+      mac: '00:22:BD:F8:19:AA'              # non-defaut (00:22:BD:F8:19:FF)
+      virtual_mac: '00:00:5E:00:01:11'      # non-defaut (not-applicable)
+      arp_flooding: false                    # non-defaut (true)
+      ip_dataplane_learning: false           # non-defaut (true)
+      limit_ip_learn_to_subnets: false       # non-defaut (true)
+      clear_remote_mac_entries: true         # non-defaut (false)
+      ep_move_detection: true                # non-defaut (false) -> garp
+      # NB multi_destination_flooding=encap-flood INCOMPATIBLE avec unknown_unicast=proxy (APIC Error 1)
+      unknown_unicast: proxy                 # non-defaut (flood) ; garde multi_dest_flooding défaut
+      unknown_ipv4_multicast: opt-flood      # non-defaut (flood)
+      unknown_ipv6_multicast: opt-flood      # non-defaut (flood)
+      multicast_arp_drop: true               # non-defaut (false) -> mcastARPDrop (conditionnel)
+      subnets:
+      - ip: 10.95.0.1/24
+        description: GOLD subnet
+        primary_ip: true                     # non-defaut (false)
+        public: true                         # non-defaut (false)
+        shared: true                         # non-defaut (false)
+    # ── MODULE #58 : filter (vzFilter+vzEntry) + contract (vzBrCP+vzSubj) — cœur ──
+    filters:
+    - name: GOLD-Filter
+      description: Filter golden
+      entries:
+      - name: GOLD-Entry
+        description: GOLD entry
+        ethertype: ip
+        protocol: tcp                        # -> prot (ternaire numéro->mot-clé, capté en mot-clé)
+        destination_from_port: https         # -> dFromPort (443->https)
+        destination_to_port: https
+        stateful: true                       # non-defaut (false) -> exige tcp
+    contracts:
+    - name: GOLD-Contract
+      description: Contract golden
+      scope: tenant                          # non-defaut (context/vrf)
+      qos_class: level2                      # non-defaut (unspecified)
+      subjects:
+      - name: GOLD-Subject
+        description: GOLD subject
+        filters:
+        - filter: GOLD-Filter                # réf filtre ci-dessus (vzRsSubjFiltAtt)
+    # ── MODULE #6 : endpoint-security-group (fvESg) — attrs + sélecteurs ──
+    application_profiles:
+    - name: GOLD-AP
+      alias: GOLD-AP-alias                   # #65 fvAp -> nameAlias
+      description: AP golden                  # #65 fvAp -> descr
+      # ── MODULE #57 : endpoint-group (fvAEPg) — cœur ──
+      endpoint_groups:
+      - name: GOLD-EPG
+        alias: GOLD-EPG-alias
+        description: EPG golden
+        bridge_domain: GOLD-BD               # réf #56 (fvRsBd)
+        intra_epg_isolation: true            # non-defaut (false) -> pcEnfPref enforced
+        proxy_arp: true                      # non-defaut (false) -> fwdCtrl proxy-arp (exige isolation)
+        preferred_group: true                # non-defaut (false) -> prefGrMemb include
+        qos_class: level3                    # non-defaut (unspecified) -> prio
+      # ── MODULE #106 : useg-endpoint-group (fvAEPg isAttrBasedEPg=yes + fvCrtrn +
+      # fvIpAttr/fvMacAttr). vm_statements (fvVmAttr) NON testés : VMM absent du sim ──
+      useg_endpoint_groups:
+      - name: GOLD-uSeg-EPG
+        alias: GOLD-uSeg-alias
+        description: uSeg EPG golden
+        bridge_domain: GOLD-BD               # réf #56 (fvRsBd)
+        intra_epg_isolation: true            # non-defaut -> pcEnfPref enforced
+        preferred_group: true                # non-defaut -> prefGrMemb include
+        qos_class: level2                    # non-defaut (unspecified) -> prio
+        physical_domains:
+        - GOLD-PhysDomain                    # réf #80 (fvRsDomAtt)
+        contracts:
+          consumers:
+          - GOLD-Contract                    # réf #58 (fvRsCons)
+        useg_attributes:
+          # ⚠️ match_type 'all' INTERDIT avec ip/mac statements (APIC Error 105
+          # « attribute cannot be configured when match type is all ») -> défaut any
+          ip_statements:
+          - name: GOLD-ip-real
+            use_epg_subnet: false            # ⚠️ DEFAUT NaC = true (usefvSubnet) -> false requis pour poser une ip
+            ip: 10.60.0.0/24                 # -> fvIpAttr ip
+          - name: GOLD-ip-subnet
+            use_epg_subnet: true             # -> usefvSubnet yes (ip 0.0.0.0)
+          mac_statements:
+          - name: GOLD-mac-stmt
+            mac: 00:50:56:AA:BB:CC           # -> fvMacAttr (upper() par le cablage)
+      endpoint_security_groups:
+      - name: GOLD-ESG
+        description: ESG golden - attrs + selecteurs
+        vrf: GOLD-VRF
+        # deployment_immediacy : instrImedcy non supporté sur fvESg en APIC 6.0(7e) -> omis
+        intra_esg_isolation: true            # non-defaut -> pcEnfPref enforced
+        preferred_group: true                # non-defaut -> prefGrMemb include
+        tag_selectors:
+        - key: GOLD-tag
+          operator: contains                 # non-defaut (defaut equals)
+          value: GOLD-value
+          description: GOLD tag selector
+        ip_subnet_selectors:
+        - value: 10.50.0.0/16
+          description: GOLD ip subnet selector
+        # NOTE #6 : epg_selectors limités au MÊME tenant (data model -> tenant.name) ;
+        # ip_external_subnet_selectors -> 'Invalid DN' en APIC 6.0(7e). Non couverts.
+    l3outs:
+    - name: GOLD-L3Out
+      vrf: GOLD-VRF
+      domain: Test_L3DOM_Standard
+      # ── MODULE #60 : l3out (l3extOut) — attrs propres (merge() non parsé) ──
+      description: L3Out golden               # -> descr
+      alias: GOLD-L3Out-alias                 # -> nameAlias
+      target_dscp: CS4                         # non-defaut (unspecified)
+      import_route_control_enforcement: true   # non-defaut (false) -> enforceRtctrl +import
+      # ── MODULE #13 : default-route-leak (l3extDefaultRouteLeakP) ──
+      default_route_leak_policy:
+        always: true                     # non-defaut (defaut false) -> yes
+        criteria: in-addition            # non-defaut (defaut only)
+        context_scope: true              # non-defaut (defaut false) -> scope ctx
+        outside_scope: false             # non-defaut (defaut true) -> pas de l3-out
+      # ── MODULE #2 : l3out-node-profile (l3extLNodeP) — TOUS attributs ──
+      node_profiles:
+      - name: GOLD-NodeProfile
+        description: Node profile golden - tous attributs non-defaut
+        nodes:
+        - node_id: 101
+          pod_id: 1
+          router_id: 10.20.1.101
+          router_id_as_loopback: false        # non-defaut (defaut true)
+          loopbacks:
+          - 10.20.255.101                       # loopback explicite (l3extLoopBackIfP)
+          static_routes:
+          - prefix: 192.0.2.0/24
+            description: GOLD static route
+            preference: 50                       # non-defaut (defaut 1)
+            bfd: true                            # non-defaut (defaut false) -> rtCtrl=bfd
+            next_hops:
+            - ip: 10.20.1.1
+              description: GOLD next hop
+              preference: 10                     # non-defaut (defaut 1)
+              type: prefix
+        # ── MODULE #3 : l3out-interface-profile (l3extLIfP) — interfaces SVI ──
+        interface_profiles:
+        - name: GOLD-IntProfile
+          description: Interface profile golden - tous attributs non-defaut
+          qos_class: level2                       # non-defaut (defaut unspecified)
+          # ── MODULE #5 : ospf/bfd interface profiles (ospfIfP/bfdIfP) ──
+          ospf:                                   # bloc imbriqué (data model)
+            ospf_interface_profile_name: GOLD-OSPF-IfP
+            policy: GOLD-OSPF-IfPol               # -> ospfRsIfPol
+            # auth_type/auth_key : secret (authKey ignore_changes) -> non round-trippable, omis
+          bfd_policy: GOLD-BFD-IfPol              # -> bfdIfP + bfdRsIfPol (clé plate)
+          interfaces:
+          - node_id: 101
+            pod_id: 1
+            module: 1
+            port: 15
+            ip: 10.30.1.1/24
+            svi: true                             # ext-svi
+            autostate: true                       # non-defaut (defaut false)
+            vlan: 110                              # dans Prod_VLAN_Pool (100-110)
+            mac: '00:11:22:33:44:55'              # non-defaut
+            mtu: 1500                              # non-defaut (defaut inherit)
+            mode: untagged                         # non-defaut (defaut regular)
+            scope: vrf                             # non-defaut (defaut local) -> encapScope ctx
+            description: GOLD SVI interface
+            # ── MODULE #4 : bgp peer connectivity (bgpPeerP) — flags ctrl/peerCtrl/addrTCtrl ──
+            bgp_peers:
+            - ip: 10.30.1.2
+              remote_as: '65010'
+              description: GOLD bgp peer
+              ttl: 5                               # non-defaut (defaut 1)
+              weight: 100                          # non-defaut (defaut 0)
+              allowed_self_as_count: 5             # non-defaut (defaut 3)
+              admin_state: false                   # non-defaut (defaut true) -> adminSt disabled
+              bfd: true                            # peerCtrl bfd
+              disable_connected_check: true        # peerCtrl dis-conn-check
+              allow_self_as: true                  # ctrl allow-self-as
+              as_override: true                    # ctrl as-override
+              disable_peer_as_check: true          # ctrl dis-peer-as-check
+              next_hop_self: true                  # ctrl nh-self
+              send_community: true                 # ctrl send-com
+              send_ext_community: true             # ctrl send-ext-com
+              remove_all_private_as: true          # privateASctrl remove-all (exige les 2 suivants)
+              remove_private_as: true              # privateASctrl remove-exclusive
+              replace_private_as_with_local_as: true  # privateASctrl replace-as
+              unicast_address_family: true         # addrTCtrl af-ucast
+              multicast_address_family: false      # non-defaut (defaut true) -> pas de af-mcast
+              local_as: 65111                      # bgpLocalAsnP
+              as_propagate: replace-as             # non-defaut (defaut none)
+      # ── MODULE #1 : external-endpoint-group (l3extInstP) — TOUS attributs ──
+      external_endpoint_groups:
+      - name: GOLD-ExtEPG
+        alias: GOLD-EPG-ALIAS
+        description: External EPG golden - tous attributs non-defaut
+        preferred_group: true
+        qos_class: level1
+        target_dscp: CS5
+        subnets:
+        # subnet /16 : scopes route-control + security (pas d'aggregate sur non-0/0)
+        - prefix: 10.99.0.0/16
+          description: GOLD subnet route+security control
+          export_route_control: true
+          import_route_control: true
+          import_security: true
+          shared_route_control: true
+          shared_security: true
+          aggregate_export_route_control: false
+          aggregate_import_route_control: false
+          aggregate_shared_route_control: false
+        # subnet 0.0.0.0/0 : aggregate flags (valides uniquement sur 0/0)
+        - prefix: 0.0.0.0/0
+          description: GOLD subnet aggregate
+          export_route_control: true
+          import_route_control: true
+          import_security: false
+          shared_route_control: true
+          shared_security: false
+          aggregate_export_route_control: true
+          aggregate_import_route_control: true
+          aggregate_shared_route_control: true

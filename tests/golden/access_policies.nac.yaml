@@ -1,0 +1,350 @@
+# Jeu de test golden — section access_policies (méthode B).
+# Voir tests/golden/README.md. Préfixe GOLD-. Additif (nouveau profil).
+---
+apic:
+  access_policies:
+    # ── MODULE #80 : vlan-pool (fvnsVlanInstP) + physical-domain (physDomP) + routed-domain (l3extDomP) ──
+    vlan_pools:
+    - name: GOLD-VLAN-Pool
+      allocation: static
+      description: VLAN pool golden           # -> descr
+      ranges:                                  # -> fvnsEncapBlk
+      - from: 500
+        to: 510
+        allocation: inherit                    # -> allocMode
+        role: external                         # -> role
+        description: GOLD VLAN range           # -> descr
+    physical_domains:
+    - name: GOLD-PhysDomain
+      vlan_pool: GOLD-VLAN-Pool                # -> infraRsVlanNs tDn
+    routed_domains:
+    - name: GOLD-RoutedDomain
+      vlan_pool: GOLD-VLAN-Pool                # -> infraRsVlanNs tDn
+    # ── MODULE #88 : access-leaf-interface-policy-group (infraAccPortGrp) — ~13 réfs de policies ──
+    leaf_interface_policy_groups:
+    - name: GOLD-AccessLeafPG
+      type: access                              # -> infraAccPortGrp
+      link_level_policy: GOLD-LinkLevel         # réf #43 (infraRsHIfPol)
+      cdp_policy: CDP_Enabled                    # existant
+      lldp_policy: LLDP_Enabled                  # existant
+      spanning_tree_policy: STP_BPDUGuard        # existant
+      mcp_policy: MCP_Strict                     # existant
+      storm_control_policy: GOLD-StormControl    # réf #46 (infraRsStormctrlIfPol)
+      egress_data_plane_policing_policy: GOLD-DPP  # réf #11 (infraRsQosEgressDppIfPol)
+      ingress_data_plane_policing_policy: GOLD-DPP # réf #11 (infraRsQosIngressDppIfPol)
+      priority_flow_control_policy: GOLD-PFC     # réf #44 (infraRsQosPfcIfPol)
+      aaep: GOLD-AEP                             # réf #42 (infraRsAttEntP)
+    # ── MODULE #84 : infra-dhcp-relay-policy (dhcpRelayP owner=infra) — providers via dhcpRsProv (capture dédiée) ──
+    dhcp_relay_policies:
+    - name: GOLD-InfraDhcpRelay
+      description: Infra DHCP relay golden
+      providers:
+      - type: epg                              # -> dhcpRsProv tDn epg
+        tenant: GOLDEN
+        application_profile: GOLD-AP
+        endpoint_group: GOLD-EPG               # réf #57
+        ip: 10.84.0.10
+    # ── MODULE #49 : access-leaf-switch-policy-group (infraAccNodePGrp) ──
+    leaf_switch_policy_groups:
+    - name: GOLD-LeafSwitchPG
+      bfd_ipv4_policy: GOLD-BFD-IPv4         # réf #21 (infraRsBfdIpv4InstPol)
+      cdp_policy: CDP_Enabled                # existant (infraRsLeafPGrpToCdpIfPol)
+      lldp_policy: LLDP_Enabled              # existant (infraRsLeafPGrpToLldpIfPol)
+    # ── MODULE #50 : access-leaf-switch-profile (infraNodeP) ──
+    leaf_switch_profiles:
+    - name: GOLD-LeafSwitchProfile
+      selectors:
+      - name: GOLD-LeafSelector
+        policy: GOLD-LeafSwitchPG           # réf #49 (infraRsAccNodePGrp)
+        node_blocks:
+        - name: GOLD-NodeBlock
+          from: 201                          # node IDs libres (selector, pas besoin de noeud réel)
+          to: 202                            # range (non-defaut = from)
+      interface_profiles:
+      - GOLD-IntProfile-Access              # réf #9 (infraRsAccPortP)
+    # ── MODULE #51 : access-spine-switch-policy-group + profile (miroirs spine de #49/#50) ──
+    spine_switch_policy_groups:
+    - name: GOLD-SpineSwitchPG
+      bfd_ipv4_policy: GOLD-BFD-IPv4         # réf #21
+      cdp_policy: CDP_Enabled
+      lldp_policy: LLDP_Enabled
+    spine_switch_profiles:
+    - name: GOLD-SpineSwitchProfile
+      selectors:
+      - name: GOLD-SpineSwSelector
+        policy: GOLD-SpineSwitchPG          # réf PG ci-dessus (infraRsSpineAccNodePGrp)
+        node_blocks:
+        - name: GOLD-SpineNodeBlock
+          from: 211                          # IDs spine libres
+          to: 212
+      interface_profiles:
+      - GOLD-SpineIntProfile                # réf #35 (infraRsSpAccPortP)
+    # ── MODULE #21 : bfd-policy (bfdIpv4InstPol) — switch policy globale ──
+    # ── MODULES #102-#103 : fex-interface-profile + fex-interface-selector (infraFexP
+    # + infraFexBndlGrp homonyme + infraHPortS sous fexprof- + port_blocks) ──
+    fex_interface_profiles:
+    - name: GOLD-FexProfile
+      selectors:
+      - name: GOLD-FexSelector
+        # descr JETÉ silencieusement par l'APIC sur les hports fexprof (cf #35 spine) -> non testé
+        policy_group: GOLD-AccessLeafPG    # ref PG #88 (type access via lookup)
+        port_blocks:
+        - name: GOLD-fexblock
+          description: GOLD fex port block
+          from_port: 1
+          to_port: 4
+    switch_policies:
+      # ── MODULE #93 : mst-policy (stpMstRegionPol sous uni/infra/mstpInstPol-default) ──
+      # + instances (stpMstDomPol) + vlan_ranges (fvnsEncapBlk). Reclassé : PAS un
+      # singleton (for_each par nom), contrairement au classement initial.
+      mst_policies:
+      - name: GOLD-MST
+        region: GOLD-Region                # regName
+        revision: 5                        # rev (requis)
+        instances:
+        - name: GOLD-MST-Inst
+          id: 1
+          vlan_ranges:
+          - from: 200
+            to: 210
+      bfd_ipv4_policies:
+      - name: GOLD-BFD-IPv4
+        description: BFD ipv4 policy golden
+        detection_multiplier: 5            # non-defaut (3)
+        min_transmit_interval: 100         # non-defaut (50)
+        min_receive_interval: 100          # non-defaut (50)
+        slow_timer_interval: 3000          # non-defaut (2000)
+        echo_receive_interval: 100         # non-defaut (50)
+        echo_frame_source_address: 10.90.0.1   # non-defaut (0.0.0.0)
+    # ── MODULE #12 : access-monitoring-policy (monInfraPol) — fault severity ──
+    monitoring:
+      policies:
+      - name: GOLD-MonPol
+        description: Monitoring policy golden
+        fault_severity_policies:
+        - class: l1PhysIf                      # classe infra valide (monInfraTarget scope)
+          faults:
+          - fault_id: F0467
+            initial_severity: warning          # non-defaut (defaut inherit)
+            target_severity: minor             # non-defaut (defaut inherit)
+            description: GOLD fault override
+    interface_policies:
+      # ── MODULE #81 : port-channel-policy (lacpLagPol) — ctrl=flags via local (reverse dédié) + l2LoadBalancePol ──
+      port_channel_policies:
+      - name: GOLD-PortChannel
+        mode: passive                        # non-defaut (off)
+        min_links: 2                         # non-defaut (1)
+        max_links: 8                         # non-defaut (16)
+        fast_select_standby: true            # défaut true -> ctrl fast-sel-hot-stdby
+        graceful_convergence: true           # défaut true -> ctrl graceful-conv
+        suspend_individual: false            # NON-defaut (true) -> retire susp-individual du ctrl
+        load_defer: false                    # ⚠️ load-defer NON supporté sim 6.0(7e) (Error 182)
+        symmetric_hash: false                # défaut false
+      # ── MODULE #46 : storm-control-policy (stormctrlIfPol) — configuration_type (ternaire) ──
+      storm_control_policies:
+      - name: GOLD-StormControl
+        description: Storm control golden
+        action: shutdown                   # non-defaut (drop)
+        configuration_type: all            # non-defaut (separate) -> isUcMcBcStormPktCfgValid Invalid
+        rate: 50                           # %% (float) mode 'all'
+        burst_rate: 75
+      # ── MODULE #45 : netflow-record (netflowRecordPol) — match_parameters (join+sort) ──
+      netflow_records:
+      - name: GOLD-NetflowRecord
+        description: Netflow record golden
+        match_parameters:                    # -> match (csv trié) ; non capté par _RE_JOIN (sort)
+        - src-ip
+        - dst-ip
+        - proto
+      # ── MODULE #82 : netflow-exporter + netflow-monitor ACCESS (uni/infra ; miroirs de #68 tenant) ──
+      netflow_exporters:
+      - name: GOLD-AccessNFExporter
+        description: Access netflow exporter golden
+        dscp: AF11                             # non-defaut (CS2)
+        destination_ip: 10.82.0.10
+        destination_port: 2055                 # capturé en entier
+        source_type: custom-src-ip
+        source_ip: 10.82.0.0/20                # masque ≤ /20 (leçon #68)
+      netflow_monitors:
+      - name: GOLD-AccessNFMonitor
+        description: Access netflow monitor golden
+        flow_record: GOLD-NetflowRecord        # -> netflowRsMonitorToRecord (enrich)
+        flow_exporters:                        # -> netflowRsMonitorToExporter (enrich)
+        - GOLD-AccessNFExporter
+      # ── MODULE #44 : priority-flow-control-policy (qosPfcIfPol) — adminSt 3-états ──
+      priority_flow_control_policies:
+      - name: GOLD-PFC
+        description: PFC golden
+        auto_state: false                    # non-defaut (true)
+        admin_state: false                   # non-defaut (true) -> adminSt off
+      # ── MODULE #43 : link-level-policy (fabricHIfPol) — autoNeg + portPhyMediaType ──
+      link_level_policies:
+      - name: GOLD-LinkLevel
+        speed: 100G                          # non-defaut (inherit)
+        link_delay_interval: 5               # non-defaut (0) -> dfeDelayMs
+        link_debounce_interval: 250          # non-defaut (100)
+        fec_mode: cl91-rs-fec                # non-defaut (inherit)
+        auto_enforce: true                   # non-defaut (false) -> autoNeg on-enforce
+        physical_media_type: sfp-10g-tx      # non-defaut (auto) -> portPhyMediaType
+      # ── MODULE #24 : macsec-parameters-policy (macsecParamPol) ──
+      macsec_parameters_policies:
+      - name: GOLD-Macsec
+        description: Macsec params golden
+        cipher_suite: gcm-aes-128          # non-defaut (gcm-aes-xpn-256)
+        confidentiality_offset: offset-30  # non-defaut (offset-0)
+        key_server_priority: 10            # non-defaut (16)
+        window_size: 128                   # non-defaut (64)
+        key_expiry_time: 100               # non-defaut (0/disabled)
+        security_policy: must-secure       # non-defaut (should-secure)
+      # ── MODULE #11 : data-plane-policing-policy (qosDppPol) ──
+      data_plane_policing_policies:
+      - name: GOLD-DPP
+        admin_state: false                 # non-defaut (defaut true) -> adminSt disabled
+        mode: packet                       # non-defaut (defaut bit)
+        type: 2R3C                         # non-defaut (defaut 1R2C)
+        sharing_mode: shared               # non-defaut (defaut dedicated)
+        conform_action: drop               # non-defaut (defaut transmit)
+        exceed_action: drop
+        violate_action: drop
+        rate: 1000
+        rate_unit: mega                    # non-defaut (defaut unspecified)
+        burst: 2000
+        burst_unit: kilo
+        peak_rate: 5000                    # 2R3C
+        peak_rate_unit: mega
+        burst_excessive: 3000
+        burst_excessive_unit: kilo
+    # ── MODULE #9 : access-leaf-interface-selector (infraHPortS) ──
+    leaf_interface_profiles:
+    - name: GOLD-IntProfile-Access
+      description: Leaf interface profile golden
+      selectors:
+      - name: GOLD-Selector
+        description: GOLD port selector
+        policy_group_type: access
+        policy_group: Server_Access_PG       # access port group existant (accportgrp)
+        port_blocks:
+        - name: GOLD-block
+          description: GOLD port block
+          from_port: 20
+          to_port: 24                          # non-defaut (defaut = from_port)
+          # from_module: 1 = défaut (1 seul module sur le simulateur) -> capture l'omet
+    # ── MODULE #36 : access-span-filter-group (spanFilterGrp + spanFilterEntry) ──
+    # PIÈGE : le DN du module utilise la valeur brute, le content le mot-clé, APIC stocke le DN
+    # canonique en mots-clés -> la forme numérique ('6') est INSTABLE (forces replacement).
+    # On utilise donc les MOTS-CLÉS (tcp/http…), forme stable round-trippable.
+    span:
+      filter_groups:
+      - name: GOLD-SpanFilter
+        description: SPAN filter group golden
+        entries:
+        - name: GOLD-FilterEntry
+          description: GOLD filter entry
+          source_ip: 10.80.0.0/24
+          destination_ip: 10.81.0.0/24
+          ip_protocol: tcp
+          source_from_port: http
+          source_to_port: https             # non-defaut, != from
+          destination_from_port: dns
+          destination_to_port: pop3          # non-defaut, != from
+      # ── MODULE #37 : access-span-destination-group (spanDestGrp, variante ERSPAN-to-EPG) ──
+      destination_groups:
+      - name: GOLD-SpanDest
+        description: SPAN destination group golden
+        tenant: Production                   # EPG existant (réf)
+        application_profile: Database_AP
+        endpoint_group: DBServers_EPG
+        ip: 10.85.0.1                        # ERSPAN dest IP
+        source_prefix: 10.85.0.0/24
+        dscp: CS1                            # non-defaut (unspecified)
+        flow_id: 10                          # non-defaut (1)
+        mtu: 9000                            # non-defaut (1518)
+        ttl: 32                              # non-defaut (64)
+        version: 1                           # non-defaut (2) -> ver1
+        enforce_version: true                # non-defaut (false)
+      # ── MODULE #40 : access-span-source-group (spanSrcGrp) — adminSt enabled/disabled ──
+      source_groups:
+      - name: GOLD-SpanSrc
+        description: SPAN source group golden
+        admin_state: true                    # non-defaut (false) -> adminSt enabled
+        filter_group: GOLD-SpanFilter        # réf #36 (spanRsSrcGrpToFilterGrp)
+        destination:
+          name: GOLD-SpanDest                # réf #37 (label spanSpanLbl)
+          description: GOLD span src label
+        sources:
+        # NB : span_drop=yes est INCOMPATIBLE côté APIC avec (a) un binding source EPG/path ET
+        # (b) un filter_group au niveau groupe (Error 105). Mode très contraint -> NON testé ici.
+        - name: GOLD-SrcEntry                # source EPG
+          description: GOLD source EPG
+          direction: in                      # non-defaut (both)
+          tenant: Production                 # spanRsSrcToEpg
+          application_profile: Database_AP
+          endpoint_group: DBServers_EPG
+    # ── MODULES #38 vspan-destination-group (spanVDestGrp) + #39 vspan-session (spanVSrcGrp) ──
+    vspan:
+      destination_groups:
+      - name: GOLD-VSpanDest
+        description: vSPAN dest group golden
+        destinations:
+        - name: GOLD-VDest
+          description: GOLD vdest
+          ip: 10.86.0.1                      # -> spanVEpgSummary (ERSPAN)
+          dscp: CS2                          # non-defaut (unspecified)
+          flow_id: 20                        # non-defaut (1)
+          mtu: 9000                          # non-defaut (1518)
+          ttl: 16                            # non-defaut (64)
+      sessions:
+      - name: GOLD-VSpanSession
+        description: vSPAN session golden
+        admin_state: false                   # non-defaut (true) -> adminSt stop
+        destination:
+          name: GOLD-VSpanDest               # label -> dest group (#38)
+          description: GOLD vspan label
+        sources:
+        - name: GOLD-VSrc
+          description: GOLD vsrc
+          direction: in                      # non-defaut (both)
+          tenant: Production                 # source EPG (spanRsSrcToEpg)
+          application_profile: Database_AP
+          endpoint_group: DBServers_EPG
+    # ── MODULE #35 : access-spine-interface-selector (infraSHPortS) ──
+    # NB : infraSHPortS n'a pas de descr (content = name+type) -> pas de description sur le sélecteur
+    # ── MODULE #89 : access-spine-interface-policy-group (infraSpAccPortGrp) — link_level/cdp/aaep ──
+    spine_interface_policy_groups:
+    - name: GOLD-SpinePG
+      link_level_policy: GOLD-LinkLevel         # réf #43 (infraRsHIfPol tnFabricHIfPolName)
+      cdp_policy: CDP_Enabled                    # existant (infraRsCdpIfPol)
+      aaep: GOLD-AEP                             # réf #42 (infraRsAttEntP)
+    spine_interface_profiles:
+    - name: GOLD-SpineIntProfile
+      selectors:
+      - name: GOLD-SpineSelector
+        policy_group: GOLD-SpinePG             # -> infraRsSpAccGrp (spaccportgrp)
+        port_blocks:
+        - name: GOLD-spine-block
+          description: GOLD spine port block   # infraPortBlk a descr
+          from_port: 1
+          to_port: 2                             # non-defaut (defaut = from_port)
+    # ── MODULE #47 : ptp-profile (ptpProfile) — mismatch_handling/forwardable (ternaires) ──
+    # NB template aes67 (défaut) gardé : telecom/smpte imposent des intervalles fixes (APIC Error 182)
+    # -> le reverse profileTemplate est dans la capture mais non poussé ici (contrainte template).
+    ptp_profiles:
+    - name: GOLD-PtpProfile
+      announce_timeout: 4                    # non-defaut (3) -> announceTimeout (direct)
+      priority: 100                          # non-defaut (128) -> localPriority (direct)
+      mismatch_handling: received            # non-defaut (configured) -> ptpoeDstMacRxNoMatch replyWithRxMac
+      forwardable: false                     # non-defaut (true) -> ptpoeDstMacType non-forwardable
+    # ── MODULE #42 : aaep (infraAttEntityP) — déjà capturé par capture_access ──
+    aaeps:
+    - name: GOLD-AEP
+      description: AAEP golden                  # test descr (infraAttEntityP)
+      physical_domains:
+      - Prod_PhysDomain                          # domaine existant (infraRsDomP)
+      routed_domains:
+      - Test_L3DOM_Standard                      # routed domain existant
+      endpoint_groups:
+      - tenant: Production                       # binding statique (infraRsFuncToEpg)
+        application_profile: Database_AP
+        endpoint_group: DBServers_EPG
+        vlan: 305                                # dans Prod_VLAN_Pool (300-305)
+        mode: untagged                           # non-defaut (regular)
