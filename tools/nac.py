@@ -1756,8 +1756,11 @@ def _write_section(filename, top_key, payload, comment):
     if os.path.isfile(path):
         existing = yaml.safe_load(open(path)) or {}
     apic = existing.get("apic", {})
-    apic[top_key] = ({**apic.get(top_key, {}), **payload}
-                     if isinstance(payload, dict) else payload)
+    # REMPLACEMENT COMPLET de la section (pas de merge) : la capture est une PHOTO
+    # de la fabric. L'ancien merge superficiel laissait survivre des cles perimees
+    # quand la fabric avait perdu des objets (ex : fabric remise a vide) -> data/
+    # incoherent, erreurs d'evaluation terraform (Invalid index). [bug corrige 2026-07-02]
+    apic[top_key] = payload
     head = (f"# {comment}\n# Genere par tools/nac.py le {datetime.date.today()} "
             f"(lecture seule). Verifiez avec `nac.py plan` avant `sync`.\n")
     with open(path, "w") as f:
@@ -3533,11 +3536,13 @@ def cmd_capture(args):
     if macsec:
         flat["access_policies"].setdefault("interface_policies", {})["macsec_parameters_policies"] = macsec
     tns = capture_tenants(apic, warnings)
-    # 3. ecriture par section
-    for section, tree in flat.items():
-        if tree:
-            _write_section(SECTION_OUT[section], section, tree,
-                           f"Capture {section} (attributs complets, derive des modules).")
+    # 3. ecriture par section — TOUTES les sections connues, TOUJOURS, meme vides :
+    # la capture est une PHOTO complete. Sauter une section vide/absente laisserait
+    # survivre l'ancien fichier (objets disparus de la fabric -> data/ perime).
+    # [bug corrige 2026-07-02]
+    for section, fname in SECTION_OUT.items():
+        _write_section(fname, section, flat.get(section) or {},
+                       f"Capture {section} (attributs complets, derive des modules).")
     p2 = _write_section("tenants.nac.yaml", "tenants", tns,
                         "Capture tenants (Phase 3, attributs complets).")
     # toggles : desactive les singletons a secret (sinon terraform echoue a les creer)
@@ -3592,6 +3597,107 @@ def cmd_sync(args):
             log.info("Annule."); return 1
     return _run(["terraform", "apply", "-input=false", "-auto-approve"]).returncode
 
+def cmd_adopt(args):
+    """Adoption SANS ECRITURE fabric (terraform import, TF >= 1.5).
+
+    1. terraform plan -out + show -json -> pour chaque objet 'to add', recupere
+       son adresse Terraform et son DN APIC (connus au moment du plan).
+    2. Genere des blocs `import { to=<adresse> id=<dn> }` dans imports_adopt.tf.
+    3. Re-plan (garde-fou destroy) puis apply : une IMPORTATION lit l'objet sur
+       la fabric et l'inscrit dans le state — AUCUN POST n'est envoye.
+    Les objets sans DN connu au plan (ex: aci_rest 'workaround') sont laisses au
+    circuit normal de creation. Le fichier imports_adopt.tf est supprime apres."""
+    import subprocess, json
+    imports_tf = os.path.join(ROOT, "imports_adopt.tf")
+    planfile = os.path.join(ROOT, ".adopt.tfplan")
+    if os.path.exists(imports_tf):
+        os.remove(imports_tf)
+    log.info(">> Analyse du plan (JSON) pour decouvrir adresses + DN...")
+    r = subprocess.run(["terraform", "plan", "-input=false", f"-out={planfile}"],
+                       cwd=ROOT, capture_output=True, text=True)
+    if r.returncode:
+        sys.stderr.write(r.stdout + r.stderr)
+        return r.returncode
+    show = subprocess.run(["terraform", "show", "-json", planfile],
+                          cwd=ROOT, capture_output=True, text=True)
+    os.remove(planfile)
+    candidates, skipped = [], []
+    for rc in json.loads(show.stdout).get("resource_changes", []):
+        if rc.get("change", {}).get("actions") != ["create"]:
+            continue
+        dn = (rc["change"].get("after") or {}).get("dn")
+        if rc.get("type") != "aci_rest_managed" or not dn:
+            skipped.append(rc["address"])
+            continue
+        if ":" in dn:
+            # le parseur d'import du provider ACI utilise ':' comme separateur
+            # (ex: DN de mac tags) -> non importable, creation normale
+            skipped.append(rc["address"])
+            continue
+        cls = (rc["change"].get("after") or {}).get("class_name")
+        candidates.append((rc["address"], dn, cls))
+    if not candidates:
+        log.info("Rien a adopter : aucun objet 'to add' importable dans le plan.")
+        return 0
+    # ne generer un bloc import QUE si l'objet existe reellement sur la fabric
+    # (sinon 'Cannot import non-existent remote object' fait echouer TOUT le lot).
+    # Verification PAR CLASSE (les DN a crochets imbriques passent mal en URL /mo/).
+    classes = sorted({c for _, _, c in candidates if c})
+    log.info(">> Verification d'existence sur l'APIC (%d DN, %d classes)...",
+             len(candidates), len(classes))
+    apic = Apic(*load_creds())
+    apic.login()
+    fabric_dns = set()
+    for cls in classes:
+        try:
+            fabric_dns.update(x.get("dn", "") for x in apic.get_class(cls))
+        except Exception:
+            pass                                           # classe illisible -> DNs absents
+    blocks = []
+    for addr, dn, cls in candidates:
+        if dn in fabric_dns:
+            blocks.append(f'import {{\n  to = {addr}\n  id = "{dn}"\n}}\n')
+        else:
+            skipped.append(addr)
+    if not blocks:
+        log.info("Aucun des objets 'to add' n'existe sur la fabric : rien a importer, "
+                 "utilisez `nac.py sync` pour les creer.")
+        return 0
+    with open(imports_tf, "w") as f:
+        f.write("# Genere par `nac.py adopt` (adoption sans ecriture) — supprime apres apply.\n\n"
+                + "\n".join(blocks))
+    log.info("%d objet(s) a IMPORTER (lecture seule).", len(blocks))
+    if skipped:
+        log.info("%d objet(s) non importables (absents de la fabric, DN inconnu au plan "
+                 "ou DN avec ':') -> creation normale : %s",
+                 len(skipped), ", ".join(skipped[:5]) + ("..." if len(skipped) > 5 else ""))
+    try:
+        plan2 = subprocess.run(["terraform", "plan", "-input=false", "-no-color"],
+                               cwd=ROOT, capture_output=True, text=True)
+        if plan2.returncode:
+            sys.stderr.write(plan2.stdout + plan2.stderr)
+            return plan2.returncode
+        m = re.search(r"^Plan:.*$", plan2.stdout, re.M)
+        log.info(m.group(0) if m else "Plan indisponible")
+        md = re.search(r"(\d+) to destroy", plan2.stdout)
+        ndes = int(md.group(1)) if md else 0
+        if ndes and not args.force:
+            log.error("ABANDON : le plan DÉTRUIRAIT %d objet(s). Lancez `nac.py capture` "
+                      "d'abord, ou --force en connaissance de cause.", ndes)
+            return 1
+        if not args.yes:
+            ans = input("terraform apply (importations = lecture seule). Continuer ? [y/N] ")
+            if ans.strip().lower() not in ("y", "yes", "o", "oui"):
+                log.info("Annule.")
+                return 1
+        rc = _run(["terraform", "apply", "-input=false", "-auto-approve"]).returncode
+        if rc == 0:
+            log.info("Adoption terminee. Verifiez avec `nac.py plan` (attendu : No changes).")
+        return rc
+    finally:
+        if os.path.exists(imports_tf):
+            os.remove(imports_tf)
+
 def cmd_bootstrap(args):
     log.info("=" * 60)
     log.info(" Collecte brownfield NaC (LECTURE SEULE)")
@@ -3617,12 +3723,15 @@ def main(argv=None):
     sp = sub.add_parser("sync", help="terraform apply (adoption)")
     sp.add_argument("-y", "--yes", action="store_true", help="sans confirmation")
     sp.add_argument("--force", action="store_true", help="autoriser meme si destructions")
+    sa = sub.add_parser("adopt", help="adoption SANS ecriture (terraform import en masse)")
+    sa.add_argument("-y", "--yes", action="store_true", help="sans confirmation")
+    sa.add_argument("--force", action="store_true", help="autoriser meme si destructions")
     sub.add_parser("bootstrap", help="capture + validate + plan")
     args = p.parse_args(argv)
     _setup_log(args.verbose)
     return {
         "capture": cmd_capture, "validate": cmd_validate, "plan": cmd_plan,
-        "sync": cmd_sync, "bootstrap": cmd_bootstrap,
+        "sync": cmd_sync, "adopt": cmd_adopt, "bootstrap": cmd_bootstrap,
     }[args.cmd](args)
 
 if __name__ == "__main__":
