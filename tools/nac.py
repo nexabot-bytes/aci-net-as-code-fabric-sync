@@ -3708,7 +3708,11 @@ def cmd_bootstrap(args):
     cmd_validate(args)
     log.info(">> Apercu (terraform plan, ne modifie rien)…")
     cmd_plan(args)
-    log.info("Collecte terminee. YAML dans data/. Adoptez avec `nac.py sync` section par section.")
+    if getattr(args, "adopt", False):
+        log.info(">> Adoption (--adopt)…")
+        return cmd_adopt(args)
+    log.info("Collecte terminee. YAML dans data/. Adoptez avec `nac.py adopt` (sans ecriture) "
+             "ou `nac.py sync`.")
     return 0
 
 # ═══════════════════════════════════════════════════════ CLI
@@ -3726,7 +3730,10 @@ def main(argv=None):
     sa = sub.add_parser("adopt", help="adoption SANS ecriture (terraform import en masse)")
     sa.add_argument("-y", "--yes", action="store_true", help="sans confirmation")
     sa.add_argument("--force", action="store_true", help="autoriser meme si destructions")
-    sub.add_parser("bootstrap", help="capture + validate + plan")
+    sb = sub.add_parser("bootstrap", help="capture + validate + plan (+ adoption avec --adopt)")
+    sb.add_argument("--adopt", action="store_true", help="enchainer l'adoption (import en masse)")
+    sb.add_argument("-y", "--yes", action="store_true", help="sans confirmation")
+    sb.add_argument("--force", action="store_true", help="autoriser meme si destructions")
     args = p.parse_args(argv)
     _setup_log(args.verbose)
     return {

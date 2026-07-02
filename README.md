@@ -1,93 +1,134 @@
-# ACI NaC Fabric Sync
+# ACI Fabric Sync
 
-**Synchronisation bidirectionnelle d'une fabric Cisco ACI avec YAML + Terraform**, en
-complément de [Cisco Network-as-Code (NaC)](https://netascode.cisco.com/).
+**Bidirectional synchronization between a Cisco ACI fabric and YAML + Terraform**,
+built on top of [Cisco Network-as-Code (NaC)](https://netascode.cisco.com/).
 
-NaC sait pousser du YAML vers une fabric (greenfield). Cet outil ajoute le sens
-inverse et le maintien en cohérence **brownfield** :
+Cisco NaC pushes YAML to a fabric (greenfield). ACI Fabric Sync adds the missing
+direction — **brownfield**: it reads any existing fabric, writes its complete
+configuration as NaC YAML, brings it under Terraform management **without touching
+it**, and keeps fabric, YAML and Terraform state identical from then on.
 
-- **`capture`** — lit TOUTE la fabric via l'API REST APIC et écrit les fichiers
-  `data/*.nac.yaml` au format du data model NaC. Le mapping APIC → YAML est **dérivé
-  automatiquement du code source des modules Terraform NaC** (aucun mapping en dur) :
-  l'outil fonctionne avec n'importe quelle fabric.
-- **`plan`** — `terraform plan` : montre tout écart entre la fabric et le YAML
-  (ex. une modification faite à la main dans le GUI APIC).
-- **`sync`** — applique le YAML vers la fabric, avec **garde-fou anti-destruction**
-  (refuse si le plan détruit ≥ 1 objet ; `--force` pour outrepasser sciemment).
-- **`bootstrap`** — capture + validation + plan : l'adoption brownfield en une commande.
+```
+Existing fabric, never managed as code:
 
-Résultat : fabric ↔ YAML ↔ state Terraform restent identiques (`plan` = *No changes*),
-que les changements viennent du YAML (GitOps) ou du GUI (re-capture).
+  nac.py bootstrap --adopt      one command, read-mostly
+  nac.py plan                   -> "No changes."      your fabric is now code
+```
 
-## Démarrage rapide
+## How it works
+
+The tool contains **no hard-coded object catalog**. At runtime it parses the source
+of the Terraform NaC modules (downloaded by `terraform init`) and derives the
+APIC-class → YAML mapping from them. It therefore works on **any fabric** and follows
+the NaC data model exactly. Four capture passes (flat lists, global singletons,
+hierarchical tenants/access, plus ~60 dedicated handlers for special cases) produce a
+complete photo of the fabric in `data/*.nac.yaml`.
+
+## Commands
+
+| Command | Description | Writes to fabric |
+|---|---|---|
+| `capture` | Photograph the fabric → write `data/*.nac.yaml` (full replacement — a photo, not a merge) | No (read-only) |
+| `validate` | Validate the YAML against the official NaC schema (`nac-validate`) | No |
+| `plan` | `terraform plan` — show every difference between fabric, YAML and state | No |
+| `adopt` | **Write-free adoption**: bulk-generate `terraform import` blocks from the plan JSON, verify each object actually exists on the APIC (per-class), and import them into the state | Imports only (+ minor in-place alignments) |
+| `sync` | `terraform apply` — make the fabric match the YAML. Creates, updates, rebuilds | Yes |
+| `bootstrap` | `capture` + `validate` + `plan`; add `--adopt` to chain the adoption | Only with `--adopt` |
+
+Common options: `-y/--yes` (no prompt), `--force` (override the destroy guard),
+`-v/--verbose`.
+
+## Safety guarantees
+
+- **Destroy guard** — `sync` and `adopt` refuse to run if the plan would destroy even
+  a single object. Overriding requires an explicit `--force`.
+- **`capture` and `plan` never write** to the fabric.
+- **Secrets are never stored**: passwords/keys the APIC does not expose are written
+  as documented placeholders (NaC modules `ignore_changes` them), and no credential
+  is ever committed — `main.tf`, `data/` and the Terraform state are git-ignored.
+- **Photo semantics**: every `capture` fully replaces the previous YAML, including
+  sections that became empty — no stale objects can survive.
+
+## Quick start
 
 ```bash
 git clone https://github.com/nexabot-bytes/aci-net-as-code-fabric-sync
 cd aci-net-as-code-fabric-sync
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-cp main.tf.example main.tf              # puis renseigner l'APIC (ou via env, cf. fichier)
-export APIC_URL=https://<apic> APIC_USER=admin APIC_PWD=<mdp>
-export ACI_URL=$APIC_URL ACI_USERNAME=$APIC_USER ACI_PASSWORD=$APIC_PWD
+cp main.tf.example main.tf                    # or use environment variables:
+export APIC_URL=https://<apic> APIC_USER=admin APIC_PWD=<password>       # nac.py
+export ACI_URL=$APIC_URL ACI_USERNAME=$APIC_USER ACI_PASSWORD=$APIC_PWD # terraform
 
-terraform init                          # télécharge le module NaC (requis par capture)
-.venv/bin/python tools/nac.py bootstrap # capture (lecture seule) + validate + plan
-.venv/bin/python tools/nac.py sync      # adoption : aligne le state (0 destroy garanti)
+terraform init                                # downloads the NaC modules
+.venv/bin/python tools/nac.py bootstrap --adopt   # capture + validate + plan + adopt
+.venv/bin/python tools/nac.py plan                # -> "No changes."
 ```
 
-Ensuite, au quotidien : éditer `data/*.nac.yaml` → `plan` → `sync`, ou après une
-modification GUI : `capture` (fabric → YAML) ou `plan`+`sync` (YAML → fabric, écrase
-la dérive).
+## Typical workflows
 
-## Architecture
+**Day 0 — take over an existing fabric (brownfield)**
+```
+bootstrap --adopt        # photo + validation + write-free adoption
+plan                     # "No changes." — done
+```
 
-| Fichier | Rôle |
-|---|---|
-| `tools/nac.py` | Moteur de synchro : `capture · validate · plan · sync · bootstrap` |
-| `tools/test_nac.py` | Harnais de test/dev : `audit · coverage · selftest · test` |
-| `tools/methodec.py` | Test « méthode C » : mutation réversible des singletons |
-| `tests/golden/` | Jeu de test persistant : 1 objet par module, tous attributs non-défaut |
-| `tools/TEST_PLAN.md` | Méthodologie de test détaillée |
-| `tools/MODULE_COVERAGE.md` | État de couverture des 195 modules NaC (source de vérité) |
-| `tools/avancement.md` | Journal de la campagne de validation (pièges APIC documentés) |
+**Daily operations (GitOps)**
+```
+edit data/*.nac.yaml  →  plan  →  sync        # YAML is the source of truth
+```
 
-Le moteur combine quatre passes de capture : classes plates (`for_each` listes),
-singletons (`count`), passes hiérarchiques (access + tenants) et ~60 fonctions de
-capture dédiées pour les cas que la dérivation automatique ne voit pas (relations,
-listes dérivées, classes ambiguës).
+**Someone changed something in the APIC GUI**
+```
+plan                     # shows exactly what drifted
+capture                  # accept the change: pull it into the YAML,  or
+sync                     # reject the change: push the YAML back over it
+```
 
-## État de validation
+**Disaster recovery — rebuild an empty fabric from the recipe**
+```
+# fabric is blank, data/ holds the last photo (keep it backed up!)
+plan                     # everything "to add", 0 to destroy
+sync                     # recreates the entire configuration in one apply
+plan                     # "No changes."
+```
+> Never run `capture` against a blank fabric you intend to rebuild — a capture is a
+> photo, and it would replace your recipe with emptiness.
 
-**174 / 195 modules NaC prouvés** par round-trip complet (`fabric → YAML → fabric`,
-comparaison attribut par attribut, idempotence `plan = No changes`) sur APIC 6.0(7e) :
+## Golden rules
 
-- **764 attributs** validés via le jeu `tests/golden/` (méthode B : objet `GOLD-*`
-  avec toutes les valeurs non-défaut, poussé, recapturé, comparé) ;
-- **22 attributs** de 11 singletons globaux validés par mutation réversible
-  (méthode C : `tools/methodec.py apply / verify / revert` sous snapshot APIC) ;
-- test produit ultime : fabric → rollback usine → apply → re-capture → **100 % identique**.
+| `plan` says | Meaning | Do |
+|---|---|---|
+| `No changes` | Everything in sync | nothing ✓ |
+| `to add` (objects exist on fabric) | Terraform doesn't know them yet | `adopt` |
+| `to add` (objects don't exist) | To be created | `sync` |
+| `to change` | Attribute drift | `sync` |
+| `to destroy` | ⚠️ stop and understand first | `capture` to re-sync, `--force` only knowingly |
 
-Les **21 modules restants** sont des limites assumées, documentées une par une dans
-`tools/MODULE_COVERAGE.md` : secrets non round-trippables (l'APIC ne renvoie jamais
-mots de passe/clés), 3 classes absentes du data model 6.0(7e) (`vxlan*`),
-incompatibilités (`interface-configuration` exige `new_interface_configuration`),
-opérations risquées par nature (node-registration) et VMM (pas de vCenter).
+## Validation status
 
-## Limites et avertissements
+Verified against APIC 6.0(7e): **174 / 195 NaC modules** proven by full round-trip
+(fabric → YAML → fabric, attribute-by-attribute comparison, `plan = No changes`),
+including an end-to-end factory-reset test: blank fabric → adopt → *No changes*,
+full config restored → **701 objects imported (read-only), 0 destroyed** → *No
+changes*, and a complete rebuild of 704 objects from YAML alone.
 
-- L'outil couvre ce que **NaC modélise**. Un objet APIC hors data model NaC n'est ni
-  capturé ni détruit — il reste non géré.
-- Les secrets (mots de passe RADIUS/TACACS, clés, tokens) sont écrits en
-  placeholder documenté : ils se posent à la création mais ne se comparent jamais
-  (`ignore_changes` dans les modules NaC).
-- `sync` sur les **singletons fabric** (DN `default`) écrase la valeur globale :
-  toujours `capture` avant `sync`, jamais d'apply avec un `data/` désynchronisé.
-- ⚠️ Le **jeu de test golden** (`tests/golden/`) référence quelques objets de la
-  fabric de lab d'origine (domaine `Test_L3DOM_Standard`, policies `CDP_Enabled`…,
-  nœuds 101-104). L'outil est générique ; seul le REJEU du banc d'essai exige cet
-  état de départ (snapshot de démo) ou une adaptation de ces références.
+The 21 remaining modules are documented limitations (write-only secrets the APIC
+never returns, classes absent from the 6.0 data model, VMM integrations requiring
+vCenter, node registration). Details in `tools/MODULE_COVERAGE.md`.
 
-## Sécurité
+## Known limitations
 
-Aucun identifiant dans le dépôt : `main.tf` (copie locale de `main.tf.example`),
-`data/` (photo de votre fabric) et le state Terraform sont exclus par `.gitignore`.
+- Covers what the **NaC data model** models. APIC objects outside it are neither
+  captured nor destroyed — they simply remain unmanaged.
+- Secrets (RADIUS/TACACS keys, passwords, tokens) cannot round-trip: they are set
+  at creation time and ignored afterwards.
+- Objects whose DN contains `:` (e.g. MAC-tag policies) cannot be *imported*
+  (ACI provider limitation) — `adopt` automatically falls back to creating them.
+
+## Requirements
+
+- Python ≥ 3.9 (PyYAML), Terraform ≥ 1.7
+- Network reachability to the APIC (HTTPS)
+- Read/write APIC account for `sync`/`adopt`; read-only is enough for
+  `capture`/`plan`/`bootstrap`
