@@ -3246,10 +3246,10 @@ def capture_interface_nodes(apic: Apic):
         by_node[node].append({"module": mod, "port": port, **attrs})
     return [{"id": n, "interfaces": i} for n, i in sorted(by_node.items())]
 
-def cmd_capture(args):
-    apic = Apic(*load_creds())
-    ver = apic.login()
-    log.info("Connected to APIC %s (v%s) — READ-ONLY.", apic.url, ver)
+def _capture_tree(apic):
+    """Construit la PHOTO complete de la fabric EN MEMOIRE (aucune ecriture).
+    Retourne (flat, tns, warnings). Utilisee par capture (qui ecrit data/) et
+    par drift (qui compare sans rien toucher)."""
     warnings = []
     # 1. passe PLATE (list-classes : leaf/switch profiles, interface policies, vpc/mst...)
     flat = capture_flat(apic)
@@ -3538,6 +3538,13 @@ def cmd_capture(args):
     if macsec:
         flat["access_policies"].setdefault("interface_policies", {})["macsec_parameters_policies"] = macsec
     tns = capture_tenants(apic, warnings)
+    return flat, tns, warnings
+
+def cmd_capture(args):
+    apic = Apic(*load_creds())
+    ver = apic.login()
+    log.info("Connected to APIC %s (v%s) — READ-ONLY.", apic.url, ver)
+    flat, tns, warnings = _capture_tree(apic)
     # 3. ecriture par section — TOUTES les sections connues, TOUJOURS, meme vides :
     # la capture est une PHOTO complete. Sauter une section vide/absente laisserait
     # survivre l'ancien fichier (objets disparus de la fabric -> data/ perime).
@@ -3598,6 +3605,101 @@ def cmd_sync(args):
         if ans.strip().lower() not in ("y", "yes", "o", "oui"):
             log.info("Cancelled."); return 1
     return _run(["terraform", "apply", "-input=false", "-auto-approve"]).returncode
+
+_DRIFT_ID_KEYS = ("name", "id", "ip", "prefix", "hostname_ip", "mac", "username",
+                  "vlan", "node_id", "class", "fault_id", "key", "contract",
+                  "destination_name", "exp_from", "dscp_from", "from", "device",
+                  "interface_name", "tenant", "module", "port")
+
+def _drift_key(item):
+    """Cle d'identite d'un element de liste (pour matcher YAML <-> fabric)."""
+    if isinstance(item, dict):
+        k = tuple((f, item[f]) for f in _DRIFT_ID_KEYS if f in item)
+        return k if k else ("_raw", repr(sorted(item.items(), key=str)))
+    return ("_val", repr(item))
+
+def _drift_label(key):
+    return key[0][1] if key and isinstance(key[0], tuple) else "?"
+
+def _drift_diff(path, yaml_v, fab_v, only_fabric, only_yaml, changed):
+    """Compare recursivement YAML declare vs photo fabric (insensible a l'ordre)."""
+    if isinstance(fab_v, dict) or isinstance(yaml_v, dict):
+        yd = yaml_v if isinstance(yaml_v, dict) else {}
+        fd = fab_v if isinstance(fab_v, dict) else {}
+        for k in sorted(set(yd) | set(fd)):
+            _drift_diff(f"{path}.{k}", yd.get(k), fd.get(k), only_fabric, only_yaml, changed)
+    elif isinstance(fab_v, list) or isinstance(yaml_v, list):
+        yl = yaml_v if isinstance(yaml_v, list) else []
+        fl = fab_v if isinstance(fab_v, list) else []
+        ym = {_drift_key(x): x for x in yl}
+        fm = {_drift_key(x): x for x in fl}
+        for k in fm:
+            if k not in ym:
+                only_fabric.append(f"{path}[{_drift_label(k)}]")
+        for k in ym:
+            if k not in fm:
+                only_yaml.append(f"{path}[{_drift_label(k)}]")
+        for k in set(ym) & set(fm):
+            _drift_diff(f"{path}[{_drift_label(k)}]", ym[k], fm[k],
+                        only_fabric, only_yaml, changed)
+    else:
+        if yaml_v is None and fab_v is not None:
+            only_fabric.append(f"{path} = {fab_v!r}")
+        elif fab_v is None and yaml_v is not None:
+            only_yaml.append(f"{path} = {yaml_v!r}")
+        elif _num(yaml_v) != _num(fab_v):
+            changed.append(f"{path}: YAML={yaml_v!r}  fabric={fab_v!r}")
+
+def cmd_drift(args):
+    """Read-only three-way alignment check: fabric vs YAML vs Terraform state.
+
+    Detects out-of-band changes that `terraform plan` alone CANNOT see —
+    in particular objects created directly in the APIC GUI, which exist in
+    neither the YAML nor the Terraform state. Writes nothing anywhere.
+    Exit code: 0 = in sync, 2 = drift detected."""
+    import yaml, subprocess
+    apic = Apic(*load_creds())
+    ver = apic.login()
+    log.info("Connected to APIC %s (v%s) — READ-ONLY.", apic.url, ver)
+    log.info(">> Building in-memory photo of the fabric...")
+    flat, tns, _ = _capture_tree(apic)
+    fabric = {sec: (flat.get(sec) or {}) for sec in SECTION_OUT}
+    fabric["tenants"] = tns
+    declared = {}
+    for sec, fname in list(SECTION_OUT.items()) + [("tenants", "tenants.nac.yaml")]:
+        fpath = os.path.join(DATA_DIR, fname)
+        doc = yaml.safe_load(open(fpath)) if os.path.isfile(fpath) else None
+        declared[sec] = ((doc or {}).get("apic") or {}).get(sec)
+    only_fabric, only_yaml, changed = [], [], []
+    for sec in fabric:
+        _drift_diff(sec, declared.get(sec), fabric[sec], only_fabric, only_yaml, changed)
+    log.info(">> Checking Terraform state alignment (terraform plan)...")
+    pl = subprocess.run(["terraform", "plan", "-input=false", "-no-color"],
+                        cwd=ROOT, capture_output=True, text=True)
+    m = re.search(r"^(Plan:.*|No changes\..*)$", pl.stdout, re.M)
+    state_line = m.group(0).strip() if m else "unavailable (terraform plan failed)"
+    state_ok = state_line.startswith("No changes")
+    log.info("=" * 64)
+    log.info(" DRIFT REPORT")
+    log.info("=" * 64)
+    for title, items, sign in (
+            ("[1] On the fabric but NOT in the YAML (created out-of-band)", only_fabric, "+"),
+            ("[2] In the YAML but NOT on the fabric (deleted out-of-band)", only_yaml, "-"),
+            ("[3] Attribute differences (modified out-of-band)", changed, "~")):
+        log.info("%s: %d", title, len(items))
+        for x in items[:20]:
+            log.info("     %s %s", sign, x)
+        if len(items) > 20:
+            log.info("     ... and %d more", len(items) - 20)
+    log.info("[4] Terraform state alignment: %s", state_line)
+    drift = bool(only_fabric or only_yaml or changed) or not state_ok
+    log.info("=" * 64)
+    if drift:
+        log.info(" VERDICT: DRIFT DETECTED — accept it with `capture` (+ `sync`/`adopt`), "
+                 "or overwrite it with `sync`.")
+        return 2
+    log.info(" VERDICT: IN SYNC — fabric, YAML and Terraform state are aligned.")
+    return 0
 
 def cmd_adopt(args):
     """Adoption SANS ECRITURE fabric (terraform import, TF >= 1.5).
@@ -3732,6 +3834,7 @@ def main(argv=None):
     sa = sub.add_parser("adopt", help="write-free adoption (bulk terraform import)")
     sa.add_argument("-y", "--yes", action="store_true", help="no confirmation prompt")
     sa.add_argument("--force", action="store_true", help="allow even if the plan destroys objects")
+    sub.add_parser("drift", help="read-only 3-way check: fabric vs YAML vs state (exit 2 on drift)")
     sb = sub.add_parser("bootstrap", help="capture + validate + plan (+ adoption with --adopt)")
     sb.add_argument("--adopt", action="store_true", help="chain the adoption (bulk import)")
     sb.add_argument("-y", "--yes", action="store_true", help="no confirmation prompt")
@@ -3740,7 +3843,8 @@ def main(argv=None):
     _setup_log(args.verbose)
     return {
         "capture": cmd_capture, "validate": cmd_validate, "plan": cmd_plan,
-        "sync": cmd_sync, "adopt": cmd_adopt, "bootstrap": cmd_bootstrap,
+        "sync": cmd_sync, "adopt": cmd_adopt, "drift": cmd_drift,
+        "bootstrap": cmd_bootstrap,
     }[args.cmd](args)
 
 if __name__ == "__main__":

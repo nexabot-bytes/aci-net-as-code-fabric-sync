@@ -33,6 +33,7 @@ complete photo of the fabric in `data/*.nac.yaml`.
 | `plan` | `terraform plan` — show every difference between fabric, YAML and state | No |
 | `adopt` | **Write-free adoption**: bulk-generate `terraform import` blocks from the plan JSON, verify each object actually exists on the APIC (per-class), and import them into the state | Imports only (+ minor in-place alignments) |
 | `sync` | `terraform apply` — make the fabric match the YAML. Creates, updates, rebuilds | Yes |
+| `drift` | **Read-only 3-way audit**: fabric vs YAML vs Terraform state. Catches out-of-band creations that `terraform plan` cannot see (objects in neither YAML nor state). Exit code 2 on drift — cron/CI friendly | No |
 | `bootstrap` | `capture` + `validate` + `plan`; add `--adopt` to chain the adoption | Only with `--adopt` |
 
 Common options: `-y/--yes` (no prompt), `--force` (override the destroy guard),
@@ -80,7 +81,7 @@ edit data/*.nac.yaml  →  plan  →  sync        # YAML is the source of truth
 
 **Someone changed something in the APIC GUI**
 ```
-plan                     # shows exactly what drifted
+drift                    # 3-way audit — also catches NEW objects plan can't see
 capture                  # accept the change: pull it into the YAML,  or
 sync                     # reject the change: push the YAML back over it
 ```
