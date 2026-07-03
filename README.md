@@ -43,6 +43,12 @@ Common options: `-y/--yes` (no prompt), `--force` (override the destroy guard),
 
 - **Destroy guard** — `sync` and `adopt` refuse to run if the plan would destroy even
   a single object. Overriding requires an explicit `--force`.
+- **Secret-overwrite guard** — `sync` refuses to *create* a secret-bearing object
+  (RADIUS/TACACS/LDAP/user, remote location, keyring, MACsec keychain...) that
+  already exists on the fabric: that would overwrite the real secret with a
+  placeholder. Adopt existing ones with `adopt` (import — the secret is never
+  touched); all other attributes are then fully managed. Provide real secrets
+  only at intentional creation time.
 - **`capture` and `plan` never write** to the fabric.
 - **Secrets are never stored**: passwords/keys the APIC does not expose are written
   as documented placeholders (NaC modules `ignore_changes` them), and no credential
@@ -119,13 +125,13 @@ entries can never re-register a switch — opt in explicitly for greenfield use.
 
 ## Validation status
 
-Verified against APIC 6.0(7e): **177 / 195 NaC modules** proven by full round-trip
+Verified against APIC 6.0(7e): **181 / 195 NaC modules** proven by full round-trip
 (fabric → YAML → fabric, attribute-by-attribute comparison, `plan = No changes`),
 including an end-to-end factory-reset test: blank fabric → adopt → *No changes*,
 full config restored → **701 objects imported (read-only), 0 destroyed** → *No
 changes*, and a complete rebuild of 704 objects from YAML alone.
 
-The 18 remaining modules are documented limitations (write-only secrets the APIC
+The 14 remaining modules are documented limitations (write-only secrets the APIC
 never returns, classes absent from the 6.0 data model, VMM integrations requiring
 vCenter, node registration). Details in `tools/MODULE_COVERAGE.md`.
 

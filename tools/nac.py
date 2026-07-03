@@ -1866,6 +1866,103 @@ def capture_fex_profiles(apic: Apic):
         out.append(o)
     return out
 
+MACSEC_PSK_PLACEHOLDER = "AB12" * 16   # PSK write-only (ignore_changes), hex requis
+
+def capture_secretful_policies(apic: Apic):
+    """objets a secret write-only, geres SAUF leur secret (ignore_changes cote
+    modules NaC) : remote_locations (fileRemotePath), key_rings (pkiKeyRing),
+    macsec keychains (macsecKeyChainPol+macsecKeyPol, PSK=placeholder) et macsec
+    interface policies (macsecIfPol/macsecFabIfPol, AUCUN secret). L'adoption de
+    l'existant passe par `adopt` (le garde-fou SECRET_CLASSES bloque sync).
+    [#113-#116]"""
+    out = {}
+    # remote locations — userPasswd/cles ssh JAMAIS captures (write-only)
+    epgs = {_parent(r["dn"]): r.get("tDn", "")
+            for r in apic.get_class("fileRsARemoteHostToEpg")
+            if r.get("dn", "").startswith("uni/fabric/path-")}
+    rls = []
+    for p in apic.get_class("fileRemotePath"):
+        o = {"name": p["name"], "hostname_ip": p.get("host"), "protocol": p.get("protocol")}
+        if p.get("descr"):
+            o["description"] = p["descr"]
+        if p.get("authType") == "useSshKeyContents":
+            o["auth_type"] = "ssh_keys"
+        if p.get("remotePath") and p["remotePath"] != "/":
+            o["path"] = p["remotePath"]
+        if p.get("remotePort") not in (None, "", "0"):
+            o["port"] = _num(p["remotePort"])
+        if p.get("userName"):
+            o["username"] = p["userName"]
+        if "/oob-" in epgs.get(p["dn"], ""):
+            o["mgmt_epg"] = "oob"
+        rls.append(o)
+    if rls:
+        out["remote_locations"] = rls
+    # key rings — cert/key JAMAIS captures ; exclut le keyring systeme (uid 0)
+    krs = []
+    for k in apic.get_class("pkiKeyRing"):
+        if k.get("uid") == "0":
+            continue
+        o = {"name": k["name"]}
+        if k.get("descr"):
+            o["description"] = k["descr"]
+        if k.get("tp"):
+            o["ca_certificate"] = k["tp"]
+        if k.get("modulus"):
+            o["modulus"] = k["modulus"]
+        krs.append(o)
+    if krs:
+        out["key_rings"] = krs
+    # macsec keychains (access uni/infra + fabric uni/fabric) — PSK = placeholder
+    keys_by = _by_parent(apic.get_class("macsecKeyPol"))
+    kc_a, kc_f = [], []
+    for c in apic.get_class("macsecKeyChainPol"):
+        o = {"name": c["name"]}
+        if c.get("descr"):
+            o["description"] = c["descr"]
+        kps = []
+        for kp in keys_by.get(c["dn"], []):
+            e = {"name": kp.get("name") or kp["keyName"], "key_name": kp["keyName"],
+                 "pre_shared_key": MACSEC_PSK_PLACEHOLDER}
+            if kp.get("descr"):
+                e["description"] = kp["descr"]
+            if kp.get("endTime") and kp["endTime"] != "infinite":
+                e["end_time"] = kp["endTime"]
+            kps.append(e)                         # start_time : ignore_changes, omis
+        _set(o, "key_policies", kps)
+        (kc_a if "/infra/" in c["dn"] else kc_f).append(o)
+    if kc_a:
+        out["macsec_keychain_access"] = kc_a
+    if kc_f:
+        out["macsec_keychain_fabric"] = kc_f
+    # macsec interface policies — aucun secret (refs keychain + parameters)
+    kc_ref = {_parent(r["dn"]): r.get("tDn", "") for r in apic.get_class("macsecRsToKeyChainPol")}
+    pp_ref = {_parent(r["dn"]): r.get("tDn", "") for r in apic.get_class("macsecRsToParamPol")}
+    mi_a, mi_f = [], []
+    for cls, bucket in (("macsecIfPol", mi_a), ("macsecFabIfPol", mi_f)):
+        try:
+            rows = apic.get_class(cls)
+        except Exception:
+            continue
+        for p in rows:
+            if p.get("uid") == "0" or p.get("name") == "default":   # policies systeme
+                continue
+            o = {"name": p["name"], "admin_state": p.get("adminSt") == "enabled"}
+            if p.get("descr"):
+                o["description"] = p["descr"]
+            mm = re.search(r"keychainp-(.+)$", kc_ref.get(p["dn"], ""))
+            if mm:
+                o["macsec_keychain_policy"] = mm.group(1)
+            mm = re.search(r"(?:paramp|fabparamp)-(.+)$", pp_ref.get(p["dn"], ""))
+            if mm:
+                o["macsec_parameters_policy"] = mm.group(1)
+            bucket.append(o)
+    if mi_a:
+        out["macsec_if_access"] = mi_a
+    if mi_f:
+        out["macsec_if_fabric"] = mi_f
+    return out
+
 def capture_port_configurations(apic: Apic, warnings: list):
     """NOUVEAU paradigme d'interfaces (new_interface_configuration=true) :
     infraPortConfig / fabricPortConfig -> interface_policies.nodes[].interfaces[] ;
@@ -3590,6 +3687,22 @@ def _capture_tree(apic):
     macsec = capture_macsec_param_policies(apic)
     if macsec:
         flat["access_policies"].setdefault("interface_policies", {})["macsec_parameters_policies"] = macsec
+    # 2i-quindecies. objets a secret write-only (geres SAUF le secret) [#113-#116]
+    sec = capture_secretful_policies(apic)
+    if sec.get("remote_locations"):
+        flat["fabric_policies"]["remote_locations"] = sec["remote_locations"]
+    if sec.get("key_rings"):
+        flat["fabric_policies"].setdefault("aaa", {})["key_rings"] = sec["key_rings"]
+    if sec.get("macsec_keychain_access"):
+        flat["access_policies"].setdefault("interface_policies", {})[
+            "macsec_keychain_policies"] = sec["macsec_keychain_access"]
+    if sec.get("macsec_keychain_fabric"):
+        flat["fabric_policies"]["macsec_keychain_policies"] = sec["macsec_keychain_fabric"]
+    if sec.get("macsec_if_access"):
+        flat["access_policies"].setdefault("interface_policies", {})[
+            "macsec_interfaces_policies"] = sec["macsec_if_access"]
+    if sec.get("macsec_if_fabric"):
+        flat["fabric_policies"]["macsec_interfaces_policies"] = sec["macsec_if_fabric"]
     # 2i-quaterdecies. NOUVEAU paradigme d'interfaces + auto-detection [#110-#112]
     np_ifaces, np_nodes, np_roles = capture_port_configurations(apic, warnings)
     new_style = bool(np_ifaces or np_nodes)
@@ -3691,6 +3804,45 @@ def cmd_validate(args):
 def cmd_plan(args):
     return _run(["terraform", "plan", "-input=false"]).returncode
 
+# classes portant un secret write-only : les CREER par-dessus un objet existant
+# POSTerait un placeholder PAR-DESSUS le vrai secret (ignore_changes ne protege
+# qu'APRES l'entree dans le state). Adoption de l'existant = `adopt` uniquement.
+SECRET_CLASSES = {"aaaUser", "aaaRadiusProvider", "aaaTacacsPlusProvider",
+                  "aaaLdapProvider", "fileRemotePath", "pkiKeyRing",
+                  "macsecKeyChainPol", "mcpInstPol", "licenseLicPolicy", "snmpTrapDest"}
+
+def _secret_overwrite_check(apic_needed=True):
+    """Garde-fou anti-ecrasement de secret : liste les CREATE du plan qui visent
+    une classe a secret ET dont l'objet existe deja sur la fabric."""
+    import subprocess, json
+    pf = os.path.join(ROOT, ".guard.tfplan")
+    r = subprocess.run(["terraform", "plan", "-input=false", f"-out={pf}"],
+                       cwd=ROOT, capture_output=True, text=True)
+    if r.returncode:
+        return None                                   # le plan lui-meme echoue -> laisser sync afficher
+    show = subprocess.run(["terraform", "show", "-json", pf],
+                          cwd=ROOT, capture_output=True, text=True)
+    os.remove(pf)
+    cands = []
+    for rc in json.loads(show.stdout).get("resource_changes", []):
+        if rc.get("change", {}).get("actions") != ["create"]:
+            continue
+        after = rc["change"].get("after") or {}
+        if after.get("class_name") in SECRET_CLASSES and after.get("dn"):
+            cands.append((rc["address"], after["class_name"], after["dn"]))
+    if not cands:
+        return []
+    apic = Apic(*load_creds())
+    apic.login()
+    hits = []
+    for cls in {c for _, c, _ in cands}:
+        try:
+            dns = {x.get("dn") for x in apic.get_class(cls)}
+        except Exception:
+            dns = set()
+        hits += [(a, d) for a, c, d in cands if c == cls and d in dns]
+    return hits
+
 def cmd_sync(args):
     import subprocess
     plan = subprocess.run(["terraform", "plan", "-input=false", "-no-color"],
@@ -3701,6 +3853,16 @@ def cmd_sync(args):
         log.error("ABORTED: the plan would DESTROY %d object(s). Make sure data/ reflects the "
                   "fabric (run `nac.py capture`). Use --force to override.", ndes)
         return 1
+    nadd = re.search(r"Plan:.*?(\d+) to add", plan.stdout)
+    if nadd and int(nadd.group(1)) and not args.force:
+        hits = _secret_overwrite_check()
+        if hits:
+            log.error("ABORTED: %d secret-bearing object(s) already EXIST on the fabric; "
+                      "creating them would overwrite their real secret with a placeholder. "
+                      "Use `nac.py adopt` (import, secret untouched) instead:", len(hits))
+            for a, d in hits[:10]:
+                log.error("   %s  (%s)", a, d)
+            return 1
     if not args.yes:
         ans = input("terraform apply. Continue? [y/N] ")
         if ans.strip().lower() not in ("y", "yes", "o", "oui"):

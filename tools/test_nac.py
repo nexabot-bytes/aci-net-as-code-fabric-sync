@@ -157,6 +157,10 @@ HIER_CLASSES = {
     "vnsRsLIfCtxToSvcRedirectPol",
     # #110-#112 nouveau paradigme d'interfaces (capture_port_configurations)
     "infraPortConfig", "fabricPortConfig", "infraNodeConfig", "fabricNodeConfig",
+    # #113-#116 objets a secret write-only (capture_secretful_policies)
+    "fileRemotePath", "fileRsARemoteHostToEpg", "pkiKeyRing",
+    "macsecKeyChainPol", "macsecKeyPol", "macsecIfPol", "macsecFabIfPol",
+    "macsecRsToKeyChainPol", "macsecRsToParamPol",
 }
 
 def _captured_classes():
