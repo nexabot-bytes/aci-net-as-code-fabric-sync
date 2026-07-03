@@ -112,6 +112,41 @@ plan                     # "No changes."
 | `to change` | Attribute drift | `sync` |
 | `to destroy` | ⚠️ stop and understand first | `capture` to re-sync, `--force` only knowingly |
 
+## Managing secrets
+
+The APIC never returns passwords or keys (write-only attributes) — no tool can
+read them back. ACI Fabric Sync therefore manages secret-bearing objects with a
+simple doctrine: **everything is managed except the secret itself.**
+
+| Object | Secret (never captured) | Managed attributes |
+|---|---|---|
+| RADIUS / TACACS / LDAP providers | key / monitoring password | host, port, timeouts, monitoring, mgmt EPG... |
+| Local users (`aaaUser`) | password (constant placeholder `Placeholder123!`) | status, email, expiry, names, domains/roles |
+| Remote locations (`fileRemotePath`) | password / SSH keys | host, protocol, path, port, username |
+| Key rings (`pkiKeyRing`) | certificate + private key | name, CA reference, modulus |
+| MACsec keychains | pre-shared keys (hex placeholder) | structure, key names, lifetimes |
+| OSPF interface auth (`ospfIfP`) | `authKey` (placeholder `NacKey12`) | **auth type + key id are captured** — otherwise a sync would silently disable MD5 auth on a brownfield |
+| BGP peers (`bgpPeerP`) | session password (omitted — the APIC preserves it) | all 20+ peer attributes |
+
+How it works:
+
+- **Existing objects (brownfield)** — adopt them with `adopt` (Terraform *import*:
+  the object is read, never written — the real secret stays in place). The
+  **secret-overwrite guard** enforces this: `sync` refuses to *create* a
+  secret-bearing object whose DN already exists on the fabric.
+- **New objects** — put the real secret in the YAML at creation time (it is
+  posted once, thenignored via `ignore_changes`), and remove it from the file
+  afterwards if you don't want it on disk.
+- **Not manageable** — `mcp` and `smart-licensing` cannot even be created without
+  their secret (kept disabled in `data/modules.nac.yaml`; enable them once you
+  provide the secret). `snmp-trap` destinations re-post their community on every
+  apply (no `ignore_changes` upstream) and are therefore not managed.
+- EIGRP has no secret at all in the NaC data model.
+
+APIC gotcha worth knowing: a MACsec pre-shared key's length must match the
+cipher suite (64 hex chars = 256-bit ciphers), and OSPF *simple* auth keys are
+limited to 8 characters.
+
 ## Both interface paradigms supported
 
 ACI has two mutually exclusive (per workspace) interface configuration styles in

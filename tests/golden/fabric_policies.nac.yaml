@@ -94,6 +94,12 @@ apic:
         - name: GOLD_LdapMap
           rules:
           - name: GOLD_LdapRule
+      # ── MODULE #114 : keyring (pkiKeyRing) — cert/key = ignore_changes, jamais capturés ──
+      key_rings:
+      - name: GOLD-KeyRing
+        description: Key ring golden
+        ca_certificate: GOLD-CA            # réf #99
+        modulus: mod3072                   # non-defaut (mod2048)
       login_domains:
       - name: GOLD_LoginDomain
         description: Login domain golden
@@ -101,6 +107,16 @@ apic:
         radius_providers:
         - hostname_ip: 10.99.0.11        # ref provider #96
           priority: 1                    # non-defaut (0)
+    # ── MODULE #113 : remote-location (fileRemotePath) — userPasswd/ssh = ignore_changes ──
+    # Adoption d'un existant = `adopt` UNIQUEMENT (garde-fou SECRET_CLASSES dans sync)
+    remote_locations:
+    - name: GOLD-RemoteLoc
+      description: Remote location golden
+      hostname_ip: 10.99.1.5
+      protocol: scp                        # non-defaut
+      path: /backup                        # non-defaut (/)
+      port: 2022
+      username: gold-backup
     # ── MODULE #91 : geolocation (geoSite + building/floor/room/row/rack + nodes) ──
     # Le site 'default' système (uid 0) est exclu de la capture.
     geolocation:

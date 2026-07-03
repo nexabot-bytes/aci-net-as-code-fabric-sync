@@ -606,7 +606,10 @@ apic:
           description: Interface profile golden - tous attributs non-defaut
           qos_class: level2                       # non-defaut (defaut unspecified)
           # ── MODULE #5 : ospf/bfd interface profiles (ospfIfP/bfdIfP) ──
-          ospf:                                   # bloc imbriqué (data model)
+          ospf:
+            auth_type: md5                    # PUBLIC — capturé (sinon sync couperait l'auth !)
+            auth_key_id: 2                    # non-defaut (1)
+            auth_key: NacKey12                # write-only (ignore_changes) -> placeholder                                   # bloc imbriqué (data model)
             ospf_interface_profile_name: GOLD-OSPF-IfP
             policy: GOLD-OSPF-IfPol               # -> ospfRsIfPol
             # auth_type/auth_key : secret (authKey ignore_changes) -> non round-trippable, omis

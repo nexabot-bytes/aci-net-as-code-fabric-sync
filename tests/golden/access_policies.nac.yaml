@@ -129,6 +129,22 @@ apic:
             target_severity: minor             # non-defaut (defaut inherit)
             description: GOLD fault override
     interface_policies:
+      # ── MODULE #115 : macsec-keychain-policies ──
+      macsec_keychain_policies:
+      - name: GOLD-KeyChain
+        description: Macsec keychain golden
+        key_policies:
+        - name: GOLD-Key1
+          key_name: AB12CD                 # hex requis
+          description: GOLD key
+          pre_shared_key: AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12AB12
+      # ── MODULE #116 : macsec-interfaces-policy (AUCUN secret) ──
+      macsec_interfaces_policies:
+      - name: GOLD-MacsecIf
+        description: Macsec interface policy golden
+        admin_state: true
+        macsec_keychain_policy: GOLD-KeyChain
+        macsec_parameters_policy: GOLD-Macsec   # réf #24 (cipher gcm-aes-256 requis pour PSK 64 hex)
       # ── MODULE #81 : port-channel-policy (lacpLagPol) — ctrl=flags via local (reverse dédié) + l2LoadBalancePol ──
       port_channel_policies:
       - name: GOLD-PortChannel
@@ -190,7 +206,7 @@ apic:
       macsec_parameters_policies:
       - name: GOLD-Macsec
         description: Macsec params golden
-        cipher_suite: gcm-aes-128          # non-defaut (gcm-aes-xpn-256)
+        cipher_suite: gcm-aes-256           # non-defaut (xpn-256) ; 256 bits = compatible PSK 64 hex du #115
         confidentiality_offset: offset-30  # non-defaut (offset-0)
         key_server_priority: 10            # non-defaut (16)
         window_size: 128                   # non-defaut (64)

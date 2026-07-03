@@ -231,6 +231,17 @@ légers). Notés ici :
 | 104-105 | oob/inband-node-address | mgmtRsOoBStNode | node_policies.nac.yaml | ✅ noeud fictif 103 role unspecified (dodge node_registration) ; node-1=APIC exclu ; v4+v6 (2026-07-02) |
 | 106 | useg-endpoint-group | fvAEPg | tenants.nac.yaml (GOLDEN) | ✅ ip/mac statements ; match 'all'⊥statements (Error 105) ; DEFAUT use_epg_subnet=true (2026-07-02) |
 | 107-109 | L4L7 PHYSICAL (device+SGT+selection) | vnsLDevVip/vnsAbsGraph/vnsLDevCtx | tenants.nac.yaml (GOLDEN) | ✅ chaîne complète 37 ressources, mode single-device, redirect → PBR #30 (2026-07-02) |
+| 110-112 | nouveau paradigme interfaces (per-port + switch config) | infraPortConfig/fabricPortConfig/infraNodeConfig/fabricNodeConfig | interface_policies + node_policies | ✅ AUTO-DÉTECTION du paradigme (flag posé par capture) ; fabric mixte = warning ; node_registration DÉSACTIVÉ par défaut (2026-07-03) |
+| 113 | remote-location | fileRemotePath | fabric_policies.nac.yaml | ✅ tout géré SAUF mdp/clés ssh ; brownfield « ubuntu » adopté par import, mdp intact ; garde-fou SECRET_CLASSES (2026-07-03) |
+| 114 | keyring | pkiKeyRing | fabric_policies.nac.yaml | ✅ name/CA/modulus ; cert+key = ignore_changes (2026-07-03) |
+| 115 | macsec-keychain-policies | macsecKeyChainPol | access_policies.nac.yaml | ✅ PSK = placeholder hex 64 ; PIÈGE : longueur PSK ⟷ cipher (2026-07-03) |
+| 116 | macsec-interfaces-policy | macsecIfPol | access_policies.nac.yaml | ✅ AUCUN secret (mal classé) ; réfs keychain #115 + params #24 (2026-07-03) |
+| #5+ | auth OSPF (complétion) | ospfIfP | tenants.nac.yaml (GOLDEN) | ✅ auth_type/auth_key_id capturés (trou brownfield fermé) + authKey placeholder 8 car. (2026-07-03) |
+
+> **Garde-fou anti-écrasement de secret (2026-07-03)** : `sync` REFUSE de *créer* un
+> objet d'une classe à secret (SECRET_CLASSES) dont le DN existe déjà sur la fabric —
+> le POST écraserait le vrai secret avec un placeholder. Adoption de l'existant =
+> `adopt` (import, secret jamais touché). Testé en réel sur le fileRemotePath « ubuntu ».
 
 > **Méthode C (singletons, 2026-07-02)** : les singletons (DN `default`) ne peuvent PAS
 > avoir de golden (ils écraseraient la vraie config). Ils sont testés par **mutation
