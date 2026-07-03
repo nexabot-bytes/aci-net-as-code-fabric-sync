@@ -33,7 +33,7 @@ import argparse, datetime, glob, json, logging, os, re, ssl, sys, urllib.request
 from collections import defaultdict
 
 # ───────────────────────────────────────────────────────────── chemins & log
-ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT     = os.environ.get("NAC_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data")
 MAIN_TF  = os.path.join(ROOT, "main.tf")
 MODDIR   = os.path.join(ROOT, ".terraform", "modules", "aci")
@@ -72,8 +72,15 @@ PHASE2_MODULES = {
 # exigent un secret : on les DESACTIVE via la cle `modules:` du data model, sinon
 # terraform tente de les creer avec des defauts incomplets et echoue.
 DISABLE_MODULES = {
-    "aci_mcp": False,             # mot de passe MCP requis
-    "aci_smart_licensing": False, # Token ID CSSM requis
+    "aci_mcp": False,               # mot de passe MCP requis
+    "aci_smart_licensing": False,   # Token ID CSSM requis
+    # SECURITE : la (re)declaration de noeuds (fabricNodeIdentP) peut re-enregistrer
+    # un switch et le sortir de la fabric. Desactive PAR DEFAUT : les entrees
+    # node_policies.nodes[] role leaf/spine ne declenchent alors JAMAIS
+    # d'enregistrement (mais alimentent normalement switch_configuration, adresses
+    # mgmt, profils...). Pour gerer l'enregistrement volontairement (greenfield),
+    # passer aci_node_registration: true dans data/modules.nac.yaml apres capture.
+    "aci_node_registration": False,
 }
 
 log = logging.getLogger("nac")
@@ -1751,13 +1758,13 @@ def capture_tenants(apic: Apic, warnings: list):
     return out
 
 # ═══════════════════════════════════════════════════════ ecriture YAML
-def _write_section(filename, top_key, payload, comment):
+def _write_section(filename, top_key, payload, comment, extra_apic=None):
     import yaml
     path = os.path.join(DATA_DIR, filename)
     existing = {}
     if os.path.isfile(path):
         existing = yaml.safe_load(open(path)) or {}
-    apic = existing.get("apic", {})
+    apic = dict(extra_apic) if extra_apic else {}
     # REMPLACEMENT COMPLET de la section (pas de merge) : la capture est une PHOTO
     # de la fabric. L'ancien merge superficiel laissait survivre des cles perimees
     # quand la fabric avait perdu des objets (ex : fabric remise a vide) -> data/
@@ -1858,6 +1865,52 @@ def capture_fex_profiles(apic: Apic):
             o["selectors"] = sels[f["name"]]
         out.append(o)
     return out
+
+def capture_port_configurations(apic: Apic, warnings: list):
+    """NOUVEAU paradigme d'interfaces (new_interface_configuration=true) :
+    infraPortConfig / fabricPortConfig -> interface_policies.nodes[].interfaces[] ;
+    infraNodeConfig / fabricNodeConfig -> node_policies.nodes[].{access,fabric}_policy_group.
+    Retourne (ifaces_par_noeud, nodecfg_par_noeud, roles_par_noeud). Le role
+    leaf/spine est requis par le cablage — SANS danger car aci_node_registration
+    est DESACTIVE par defaut (DISABLE_MODULES). [#110-#112]"""
+    ifaces, roles = defaultdict(list), {}
+    for cls, is_fabric in (("infraPortConfig", False), ("fabricPortConfig", True)):
+        for p in apic.get_class(cls):
+            if p.get("subPort") not in (None, "", "0"):
+                warnings.append(f"sub-port {p.get('dn')} non capture (sub_ports non supporte)")
+                continue
+            nid = int(p["node"])
+            o = {"port": int(p["port"])}
+            if p.get("card") and p["card"] != "1":
+                o["module"] = int(p["card"])
+            if is_fabric:
+                o["fabric"] = True
+            if p.get("description"):
+                o["description"] = p["description"]
+            if p.get("shutdown") == "yes":
+                o["shutdown"] = True
+            if not is_fabric and p.get("brkoutMap") and p["brkoutMap"] != "none":
+                o["breakout"] = p["brkoutMap"]
+            if not is_fabric and p.get("connectedFex") not in (None, "", "unspecified"):
+                o["fex_id"] = int(p["connectedFex"])
+            mm = re.search(r"/(?:accportgrp|accbundle|spaccportgrp|leportgrp|spportgrp)-(.+)$",
+                           p.get("assocGrp", ""))
+            if mm:
+                o["policy_group"] = mm.group(1)
+            if p.get("role"):
+                roles[nid] = p["role"]
+            ifaces[nid].append(o)
+    nodecfg = {}
+    for cls, key in (("infraNodeConfig", "access_policy_group"),
+                     ("fabricNodeConfig", "fabric_policy_group")):
+        for n in apic.get_class(cls):
+            g = n.get("assocGrp", "")
+            mm = re.search(r"/(?:accnodepgrp|spaccnodepgrp|lenodepgrp|spnodepgrp)-(.+)$", g)
+            if mm:
+                nid = int(n["node"])
+                nodecfg.setdefault(nid, {})[key] = mm.group(1)
+                roles.setdefault(nid, "spine" if ("spaccnodepgrp" in g or "spnodepgrp" in g) else "leaf")
+    return ifaces, nodecfg, roles
 
 def capture_node_addresses(apic: Apic, warnings: list):
     """adresses mgmt statiques (mgmtRsOoBStNode / mgmtRsInBStNode) -> node_policies
@@ -3537,6 +3590,39 @@ def _capture_tree(apic):
     macsec = capture_macsec_param_policies(apic)
     if macsec:
         flat["access_policies"].setdefault("interface_policies", {})["macsec_parameters_policies"] = macsec
+    # 2i-quaterdecies. NOUVEAU paradigme d'interfaces + auto-detection [#110-#112]
+    np_ifaces, np_nodes, np_roles = capture_port_configurations(apic, warnings)
+    new_style = bool(np_ifaces or np_nodes)
+    classic_style = bool(flat["access_policies"].get("leaf_interface_profiles")
+                         or flat["access_policies"].get("spine_interface_profiles")
+                         or flat["fabric_policies"].get("leaf_interface_profiles"))
+    if new_style:
+        # deduplication : le shutdown nouveau-style cree AUSSI un fabricRsOosPath
+        # cote APIC, que le lecteur classique recapture -> le port config est
+        # proprietaire du port, on retire l'entree classique equivalente
+        owned = {(nid, i.get("module", 1), i["port"]) for nid, il in np_ifaces.items() for i in il}
+        by_id = {n["id"]: n for n in flat["interface_policies"].get("nodes", [])}
+        for n in by_id.values():
+            n["interfaces"] = [i for i in n.get("interfaces", [])
+                               if (n["id"], i.get("module", 1), i["port"]) not in owned]
+        for nid, il in np_ifaces.items():
+            by_id.setdefault(nid, {"id": nid}).setdefault("interfaces", []).extend(il)
+        flat["interface_policies"]["nodes"] = [n for _, n in sorted(by_id.items())
+                                               if n.get("interfaces")]
+        npn = {n["id"]: n for n in flat["node_policies"].get("nodes", [])}
+        for nid in sorted(set(np_roles) | set(np_nodes)):
+            e = npn.setdefault(nid, {"id": nid})
+            e["role"] = np_roles.get(nid, "leaf")
+            e.update(np_nodes.get(nid, {}))
+        flat["node_policies"]["nodes"] = [npn[k] for k in sorted(npn)]
+        if classic_style:
+            warnings.append("MIXED fabric: both interface styles coexist; "
+                            "new_interface_configuration flag NOT set (classic style "
+                            "managed, per-port style captured read-only)")
+        else:
+            # fabric 100% nouveau style -> poser le drapeau (ecrit dans la
+            # section interface_policies par cmd_capture)
+            flat["interface_policies"]["__new_paradigm__"] = True
     tns = capture_tenants(apic, warnings)
     return flat, tns, warnings
 
@@ -3549,9 +3635,17 @@ def cmd_capture(args):
     # la capture est une PHOTO complete. Sauter une section vide/absente laisserait
     # survivre l'ancien fichier (objets disparus de la fabric -> data/ perime).
     # [bug corrige 2026-07-02]
+    # drapeau du paradigme d'interfaces : cle apic.new_interface_configuration,
+    # portee par le fichier interface_policies.nac.yaml (les cles apic.* de tous
+    # les fichiers data/ sont fusionnees par le module NaC)
+    new_flag = bool((flat.get("interface_policies") or {}).pop("__new_paradigm__", False))
+    if new_flag:
+        log.info("  per-port interface paradigm detected -> new_interface_configuration: true")
     for section, fname in SECTION_OUT.items():
         _write_section(fname, section, flat.get(section) or {},
-                       f"Captured {section} (full attributes, derived from the NaC modules).")
+                       f"Captured {section} (full attributes, derived from the NaC modules).",
+                       extra_apic={"new_interface_configuration": True}
+                       if (new_flag and section == "interface_policies") else None)
     p2 = _write_section("tenants.nac.yaml", "tenants", tns,
                         "Captured tenants (full attributes).")
     # toggles : desactive les singletons a secret (sinon terraform echoue a les creer)
@@ -3584,8 +3678,15 @@ def _run(cmd, **kw):
     return subprocess.run(cmd, cwd=ROOT, **kw)
 
 def cmd_validate(args):
-    venv = os.path.join(ROOT, ".venv", "bin", "nac-validate")
-    return _run([venv if os.path.exists(venv) else "nac-validate", "data/"]).returncode
+    candidates = [os.path.join(ROOT, ".venv", "bin", "nac-validate"),
+                  os.path.join(os.path.dirname(sys.executable), "nac-validate")]
+    exe = next((c for c in candidates if os.path.exists(c)), "nac-validate")
+    try:
+        return _run([exe, "data/"]).returncode
+    except FileNotFoundError:
+        log.warning("nac-validate not found -> schema validation SKIPPED "
+                    "(pip install nac-validate to enable it)")
+        return 0
 
 def cmd_plan(args):
     return _run(["terraform", "plan", "-input=false"]).returncode
@@ -3663,6 +3764,7 @@ def cmd_drift(args):
     log.info("Connected to APIC %s (v%s) — READ-ONLY.", apic.url, ver)
     log.info(">> Building in-memory photo of the fabric...")
     flat, tns, _ = _capture_tree(apic)
+    (flat.get("interface_policies") or {}).pop("__new_paradigm__", None)
     fabric = {sec: (flat.get(sec) or {}) for sec in SECTION_OUT}
     fabric["tenants"] = tns
     declared = {}

@@ -106,15 +106,26 @@ plan                     # "No changes."
 | `to change` | Attribute drift | `sync` |
 | `to destroy` | ⚠️ stop and understand first | `capture` to re-sync, `--force` only knowingly |
 
+## Both interface paradigms supported
+
+ACI has two mutually exclusive (per workspace) interface configuration styles in
+the NaC data model: the **classic** profiles/selectors model and the **per-port**
+model (`new_interface_configuration`, ACI ≥ 5.2). `capture` reads both and
+**auto-detects the paradigm**: on a pure per-port fabric it sets the flag
+automatically; on a mixed fabric it warns and manages the classic style while
+still capturing the per-port objects read-only. Node registration
+(`fabricNodeIdentP`) is **disabled by default** (`data/modules.nac.yaml`) so node
+entries can never re-register a switch — opt in explicitly for greenfield use.
+
 ## Validation status
 
-Verified against APIC 6.0(7e): **174 / 195 NaC modules** proven by full round-trip
+Verified against APIC 6.0(7e): **177 / 195 NaC modules** proven by full round-trip
 (fabric → YAML → fabric, attribute-by-attribute comparison, `plan = No changes`),
 including an end-to-end factory-reset test: blank fabric → adopt → *No changes*,
 full config restored → **701 objects imported (read-only), 0 destroyed** → *No
 changes*, and a complete rebuild of 704 objects from YAML alone.
 
-The 21 remaining modules are documented limitations (write-only secrets the APIC
+The 18 remaining modules are documented limitations (write-only secrets the APIC
 never returns, classes absent from the 6.0 data model, VMM integrations requiring
 vCenter, node registration). Details in `tools/MODULE_COVERAGE.md`.
 

@@ -155,6 +155,8 @@ HIER_CLASSES = {
     "vnsLIf", "vnsRsCIfAttN", "vnsAbsGraph", "vnsAbsNode", "vnsRsNodeToLDev",
     "vnsLDevCtx", "vnsLIfCtx", "vnsRsLIfCtxToLIf", "vnsRsLIfCtxToBD",
     "vnsRsLIfCtxToSvcRedirectPol",
+    # #110-#112 nouveau paradigme d'interfaces (capture_port_configurations)
+    "infraPortConfig", "fabricPortConfig", "infraNodeConfig", "fabricNodeConfig",
 }
 
 def _captured_classes():
