@@ -417,9 +417,11 @@ def capture_access(apic: Apic, warnings: list):
                          ("l3extDomP", "terraform-aci-routed-domain", "routed_domains")):
         doms = []
         for d in apic.get_class(cn):
-            if d["dn"] not in vlanns:
-                continue
-            o = obj(mod, cn, d); o["vlan_pool"] = vlanns[d["dn"]]
+            if d.get("uid") == "0" and d["dn"] not in vlanns:
+                continue                         # domaine SYSTEME sans pool (ex 'phys')
+            o = obj(mod, cn, d)
+            if d["dn"] in vlanns:                # vlan_pool OPTIONNEL (bug corrige :
+                o["vlan_pool"] = vlanns[d["dn"]] # les domaines sans pool etaient perdus)
             doms.append(o)
         _set(ap, key, doms)
     # aaeps -> domains + bindings EPG (infraRsFuncToEpg sous gen-default)
@@ -1070,6 +1072,15 @@ def capture_tenants(apic: Apic, warnings: list):
             rsp = ospfrsifpol_by_dn.get(oifp["dn"] + "/rsIfPol")
             if rsp and rsp.get("tnOspfIfPolName"):
                 ospf["policy"] = rsp["tnOspfIfPolName"]
+            # authentification OSPF : authType/authKeyId sont PUBLICS et doivent
+            # etre captures (sinon un sync remettrait authType=none et couperait
+            # l'auth MD5 d'un brownfield) ; authKey = write-only (ignore_changes)
+            # -> placeholder, requis par le module quand l'auth est active
+            if oifp.get("authType") and oifp["authType"] != "none":
+                ospf["auth_type"] = oifp["authType"]
+                if oifp.get("authKeyId") and oifp["authKeyId"] != "1":
+                    ospf["auth_key_id"] = _num(oifp["authKeyId"])
+                ospf["auth_key"] = OSPF_KEY_PLACEHOLDER   # 8 car. max en auth simple
             if ospf:
                 ifo["ospf"] = ospf
         # bfd interface profile (bfdIfP) -> bfd_policy (via bfdRsIfPol)
@@ -2906,7 +2917,8 @@ def capture_geolocation(apic: Apic):
         sites.append(so)
     return sites
 
-AAA_PWD_PLACEHOLDER = "Placeholder123!"   # pwd aaaUser REQUIS par le cablage, write-only (ignore_changes)
+AAA_PWD_PLACEHOLDER = "Placeholder123!"
+OSPF_KEY_PLACEHOLDER = "NacKey12"      # authKey ospfIfP write-only (8 car. max si auth simple)   # pwd aaaUser REQUIS par le cablage, write-only (ignore_changes)
 
 def capture_aaa_security(apic: Apic):
     """objets AAA nommes -> fabric_policies.aaa.{radius_providers, tacacs_providers,
@@ -3809,7 +3821,8 @@ def cmd_plan(args):
 # qu'APRES l'entree dans le state). Adoption de l'existant = `adopt` uniquement.
 SECRET_CLASSES = {"aaaUser", "aaaRadiusProvider", "aaaTacacsPlusProvider",
                   "aaaLdapProvider", "fileRemotePath", "pkiKeyRing",
-                  "macsecKeyChainPol", "mcpInstPol", "licenseLicPolicy", "snmpTrapDest"}
+                  "macsecKeyChainPol", "mcpInstPol", "licenseLicPolicy", "snmpTrapDest",
+                  "ospfIfP"}   # authKey placeholder quand l'auth OSPF est active
 
 def _secret_overwrite_check(apic_needed=True):
     """Garde-fou anti-ecrasement de secret : liste les CREATE du plan qui visent
